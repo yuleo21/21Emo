@@ -1,0 +1,18 @@
+{
+  "name": "net.yuleo21.21emo",
+  "displayName": "21Emo",
+  "version": "1.0.0",
+  "author": {
+    "name": "yuleo21",
+    "url": "https://github.com/yuleo21"
+  },
+  "unity": "2022.3",
+  "description": "Facial expression animator generator for VRChat avatars using Animator As Code (AacV1).",
+  "vpmDependencies": {
+    "com.vrchat.avatars": ">=3.5.0",
+    "dev.hai-vr.animator-as-code.v1": ">=1.0.0"
+  },
+  "legacyFolders": {
+    "Assets\\21Emo": ""
+  }
+}
