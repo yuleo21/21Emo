@@ -1,6 +1,6 @@
 {
     "name": "net.yuleo21.21emo.Editor",
-    "rootNamespace": "TwentyOneEmo",
+    "rootNamespace": "yulEmo",
     "references": [
         "AnimatorAsCode.V1",
         "VRC.SDK3A",
