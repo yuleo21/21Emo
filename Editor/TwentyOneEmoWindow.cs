@@ -6,14 +6,14 @@ using UnityEditor.Animations;
 using UnityEngine;
 using VRC.SDK3.Avatars.Components;
 
-namespace 21Emo
+namespace TwentyOneEmo
 {
     /// <summary>
     /// 21Emo のメインウィンドウ。
     /// VRChat アバター用の表情アニメーターコントローラーを、
     /// Animator As Code (AacV1) を使って生成するためのエディタ拡張。
     /// </summary>
-    public class 21EmoWindow : EditorWindow
+    public class TwentyOneEmoWindow : EditorWindow
     {
         private const int FaceFixSlotCount = 8;
         private const int GestureCount = 7;
@@ -23,7 +23,7 @@ namespace 21Emo
         private GameObject _lastLoadedAvatar;
 
         // 手のモード & WD設定
-        private 21EmoGenerator.HandMode _handMode = 21EmoGenerator.HandMode.Both;
+        private TwentyOneEmoGenerator.HandMode _handMode = TwentyOneEmoGenerator.HandMode.Both;
         private bool _writeDefaults = true;
 
         // Idle（待機用）
@@ -61,7 +61,7 @@ namespace 21Emo
         [MenuItem("21tools/21Emo")]
         public static void Open()
         {
-            var window = GetWindow<21EmoWindow>("21Emo");
+            var window = GetWindow<TwentyOneEmoWindow>("21Emo");
             window.minSize = new Vector2(480, 640);
         }
 
@@ -123,13 +123,13 @@ namespace 21Emo
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("1. モード・設定", EditorStyles.boldLabel);
 
-            var newMode = (21EmoGenerator.HandMode)EditorGUILayout.EnumPopup("手のモード", _handMode);
+            var newMode = (TwentyOneEmoGenerator.HandMode)EditorGUILayout.EnumPopup("手のモード", _handMode);
             if (newMode != _handMode)
             {
-                var oldDefaultName = _handMode == 21EmoGenerator.HandMode.Both ? "21Facial_Both" : "21Facial_Either";
+                var oldDefaultName = _handMode == TwentyOneEmoGenerator.HandMode.Both ? "21Facial_Both" : "21Facial_Either";
                 if (_controllerName == oldDefaultName)
                 {
-                    _controllerName = newMode == 21EmoGenerator.HandMode.Both ? "21Facial_Both" : "21Facial_Either";
+                    _controllerName = newMode == TwentyOneEmoGenerator.HandMode.Both ? "21Facial_Both" : "21Facial_Either";
                 }
                 _handMode = newMode;
             }
@@ -169,7 +169,7 @@ namespace 21Emo
 
             EditorGUILayout.Space(4);
 
-            if (_handMode == 21EmoGenerator.HandMode.Both)
+            if (_handMode == TwentyOneEmoGenerator.HandMode.Both)
             {
                 DrawBothGestureFields();
             }
@@ -407,7 +407,7 @@ namespace 21Emo
             }
 
             // UI に適用
-            _handMode = isBoth ? 21EmoGenerator.HandMode.Both : 21EmoGenerator.HandMode.Either;
+            _handMode = isBoth ? TwentyOneEmoGenerator.HandMode.Both : TwentyOneEmoGenerator.HandMode.Either;
             _controllerName = isBoth ? "21Facial_Both" : "21Facial_Either";
 
             if (detectedIdleClip != null)
@@ -653,7 +653,7 @@ namespace 21Emo
             }
 
             var config = BuildConfig();
-            21EmoGenerator.Generate(config, assetPath);
+            TwentyOneEmoGenerator.Generate(config, assetPath);
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
@@ -685,16 +685,16 @@ namespace 21Emo
             }
         }
 
-        private 21EmoGenerator.Config BuildConfig()
+        private TwentyOneEmoGenerator.Config BuildConfig()
         {
-            var gestures = new 21EmoGenerator.GestureDef[GestureCount];
+            var gestures = new TwentyOneEmoGenerator.GestureDef[GestureCount];
 
-            if (_handMode == 21EmoGenerator.HandMode.Both)
+            if (_handMode == TwentyOneEmoGenerator.HandMode.Both)
             {
                 for (var i = 0; i < GestureCount; i++)
                 {
                     var info = GestureInfos[i];
-                    gestures[i] = new 21EmoGenerator.GestureDef(
+                    gestures[i] = new TwentyOneEmoGenerator.GestureDef(
                         info.Name, info.Value,
                         _clipsLeft[i],
                         _clipsRight[i]);
@@ -705,7 +705,7 @@ namespace 21Emo
                 for (var i = 0; i < GestureCount; i++)
                 {
                     var info = GestureInfos[i];
-                    gestures[i] = new 21EmoGenerator.GestureDef(
+                    gestures[i] = new TwentyOneEmoGenerator.GestureDef(
                         info.Name, info.Value,
                         _clipsEither[i]);
                 }
@@ -714,7 +714,7 @@ namespace 21Emo
             // Idle が空の場合は強制的に WD オン
             var actualWriteDefaults = _idleClip == null ? true : _writeDefaults;
 
-            return new 21EmoGenerator.Config
+            return new TwentyOneEmoGenerator.Config
             {
                 HandMode         = _handMode,
                 WriteDefaults    = actualWriteDefaults,

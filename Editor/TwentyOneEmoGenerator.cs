@@ -4,11 +4,11 @@ using UnityEditor;
 using UnityEditor.Animations;
 using UnityEngine;
 
-namespace 21Emo
+namespace TwentyOneEmo
 {
     /// <summary>
     /// Animator As Code (AacV1) を使って、21Emo の表情アニメーターコントローラーを
-    /// 実際に生成する処理。UI (21EmoWindow) からのみ呼び出される想定。
+    /// 実際に生成する処理。UI (TwentyOneEmoWindow) からのみ呼び出される想定。
     ///
     /// 生成されるパラメータ:
     ///   GestureLeft  (Int)  VRChat標準パラメータ。左手のジェスチャー(0-7)。
@@ -28,7 +28,7 @@ namespace 21Emo
     ///     - Any State → 各 FaceFix ステート（条件: FaceFix == value, Duration: 0.1s） ※FaceLock条件は不要
     ///     - 各 FaceFix ステート → Exit（条件: FaceFix != value, Duration: 0.1s）
     /// </summary>
-    public static class 21EmoGenerator
+    public static class TwentyOneEmoGenerator
     {
         public enum HandMode
         {
