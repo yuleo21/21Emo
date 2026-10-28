@@ -1,0 +1,16 @@
+{
+    "name": "net.yuleo21.21emo.Runtime",
+    "rootNamespace": "yulEmo",
+    "references": [
+        "VRC.SDKBase"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

@@ -18,6 +18,9 @@ namespace yulEmo
     ///   GestureRight (Int)  VRChat標準パラメータ。右手のジェスチャー(0-7)。
     ///   FaceFix      (Int)  固定表情の選択(0=なし, 1-8=対応する表情)。
     ///   FaceLock     (Bool) 表情固定中などの制御用パラメータ。
+    ///   FacePreset   (Bool / Int) ジェスチャー表情のプリセット切り替え。
+    ///                  追加プリセットが 1 個のとき Bool（False=基本, True=プリセット1）。
+    ///                  2 個以上のとき Int（0=基本, 1〜N=各プリセット）。0 個のときは作らない。
     ///
     /// レイヤー名は "21Facial" に固定される。
     ///
@@ -31,9 +34,20 @@ namespace yulEmo
     ///     - いずれかのルールが成立している間は表情変更を無効にする（OR）
     ///     - Idle → 各ジェスチャーステートの条件に、全ルールの「成立しない」条件を追加（AND）
     ///     - 各ジェスチャーステート → Exit に、ルールごとに「成立」の遷移を追加（FaceLock 条件なし）
+    ///   ジェスチャープリセット:
+    ///     - 基本のジェスチャー表情と、各プリセットのジェスチャー表情で、それぞれ別のステート群を作る
+    ///     - Idle → 各ジェスチャーステートの条件に FacePreset の条件を追加（基本=0/False, プリセットN=N/True）
     ///   FaceFix ステート (1〜8):
     ///     - Any State → 各 FaceFix ステート（条件: FaceFix == value, Duration: 0.1s） ※FaceLock条件は不要
     ///     - 各 FaceFix ステート → Exit（条件: FaceFix != value, Duration: 0.1s）
+    ///     - 各 FaceFix ステートに Parameter Driver を付け、FaceLock を False にする
+    ///   ジェスチャ表情メニュー（Config.UseGestureFaceMenu）:
+    ///     - FaceFix パラメータを流用する。値はジェスチャ表情が 1 から先に使い、既存の FaceFix スロット（1〜8）はその後ろにずれる
+    ///       （GetGestureFaceEntries / GetGestureFaceOffset 参照）
+    ///     - Idle → 各ジェスチャ表情ステート（条件: FaceFix == value [&& 無効化ルールが全て不成立], Duration: 0.1s）
+    ///     - 各ジェスチャ表情ステート → Exit（条件: FaceFix != value, Duration: 0.1s）
+    ///     - 無効化ルールが成立したら Exit（→ Idle）
+    ///     - 各ジェスチャ表情ステートに Parameter Driver を付け、FaceLock を False にする
     /// </summary>
     public static class yulEmoGenerator
     {
@@ -73,6 +87,23 @@ namespace yulEmo
                 Value = value;
                 Clip = clipLeft;
                 ClipRight = clipRight;
+            }
+        }
+
+        /// <summary>
+        /// ジェスチャー表情のプリセット 1 つ分。基本のジェスチャー表情とは別に用意する表情セット。
+        /// </summary>
+        public readonly struct GesturePreset
+        {
+            /// <summary>メニューに表示する名前。</summary>
+            public readonly string Name;
+            /// <summary>基本の Config.Gestures と同じ形式（HandMode に応じて使われるクリップが変わる）。</summary>
+            public readonly GestureDef[] Gestures;
+
+            public GesturePreset(string name, GestureDef[] gestures)
+            {
+                Name = name;
+                Gestures = gestures;
             }
         }
 
@@ -135,6 +166,44 @@ namespace yulEmo
             }
         }
 
+        /// <summary>ジェスチャ表情メニューのエントリが、左手・右手のどちらの表情か（Either モードでは None）。</summary>
+        public enum GestureFaceSide
+        {
+            None,
+            Left,
+            Right
+        }
+
+        /// <summary>
+        /// ジェスチャ表情メニューの 1 項目（Idle 以外のジェスチャの表情 1 つ）。
+        /// FixValue は、この表情を選ぶときの FaceFix パラメータの値（1 から順に割り当てる）。
+        /// </summary>
+        public readonly struct GestureFaceEntry
+        {
+            /// <summary>0 = 基本のジェスチャー表情、1〜N = 各プリセット。</summary>
+            public readonly int SetIndex;
+            /// <summary>基本なら "Default"、プリセットならプリセット名。</summary>
+            public readonly string SetName;
+            public readonly string GestureName;
+            public readonly int GestureValue;
+            public readonly GestureFaceSide Side;
+            public readonly AnimationClip Clip;
+            public readonly int FixValue;
+
+            public GestureFaceEntry(
+                int setIndex, string setName, string gestureName, int gestureValue,
+                GestureFaceSide side, AnimationClip clip, int fixValue)
+            {
+                SetIndex = setIndex;
+                SetName = setName;
+                GestureName = gestureName;
+                GestureValue = gestureValue;
+                Side = side;
+                Clip = clip;
+                FixValue = fixValue;
+            }
+        }
+
         public class Config
         {
             public HandMode HandMode;
@@ -142,8 +211,33 @@ namespace yulEmo
             public bool UseGestureWeight;
             public AnimationClip IdleClip;
             public GestureDef[] Gestures;
+
+            /// <summary>
+            /// 基本のジェスチャー表情に加えて切り替えられるプリセット。null / 空なら使用しない。
+            /// クリップが 1 つも設定されていないプリセットは無視される（GetActivePresets 参照）。
+            /// </summary>
+            public GesturePreset[] Presets;
+
             public bool UseFaceFix;
             public AnimationClip[] FaceFixClips;
+
+            /// <summary>
+            /// FaceFix トグル（1〜8）のメニューアイコン。FaceFixClips と同じ並びで、null の要素はアイコンなし。
+            /// Generator 自体は使わず、yulEmoModularAvatarSetup がメニューに設定する。
+            /// </summary>
+            public Texture2D[] FaceFixIcons;
+
+            /// <summary>
+            /// FaceFix トグル（1〜8）のメニュー表示名。FaceFixClips と同じ並びで、null / 空の要素は「1」〜「8」の番号になる。
+            /// Generator 自体は使わず、yulEmoModularAvatarSetup がメニューに設定する。
+            /// </summary>
+            public string[] FaceFixNames;
+
+            /// <summary>
+            /// true の場合、Idle 以外の各ジェスチャの表情を FaceFix パラメータで固定できるステートとメニューを追加する。
+            /// FaceFix の値はジェスチャ表情が 1 から先に使い、既存の FaceFix スロット（1〜8）はその後ろにずれる。
+            /// </summary>
+            public bool UseGestureFaceMenu;
 
             /// <summary>
             /// 元の表情レイヤーとの干渉防止用。null / 空の場合はデフォルト表情レイヤーを作らない。
@@ -164,8 +258,144 @@ namespace yulEmo
             public DisableRule[] DisableRules;
         }
 
+        public const string FacePresetParameter = "FacePreset";
+
+        /// <summary>ジェスチャ表情メニュー用ステートの名前の接頭辞（アバターからの読み込みで、通常のジェスチャーステートと区別するため）。</summary>
+        public const string GestureFixStatePrefix = "GestureFix_";
+
+        /// <summary>基本のジェスチャー表情（プリセットではないもの）のメニュー名。</summary>
+        public const string DefaultGestureSetName = "Default";
+
         private const string SystemName = "21Facial";
         private const string DefaultFaceLayerName = "21Facial_Default";
+
+        /// <summary>
+        /// 実際に使われるプリセット（クリップが 1 つ以上設定されているもの）を、設定順のまま返す。
+        /// リストの i 番目（0 始まり）が FacePreset = i + 1 に対応する。
+        /// Generator とメニュー作成（yulEmoModularAvatarSetup）の両方で同じ判定を使うための関数。
+        /// </summary>
+        public static List<GesturePreset> GetActivePresets(Config config)
+        {
+            var result = new List<GesturePreset>();
+            if (config == null || config.Presets == null) return result;
+
+            foreach (var preset in config.Presets)
+            {
+                if (preset.Gestures == null) continue;
+
+                var hasClip = false;
+                foreach (var gesture in preset.Gestures)
+                {
+                    if (gesture.Clip != null || gesture.ClipRight != null)
+                    {
+                        hasClip = true;
+                        break;
+                    }
+                }
+                if (hasClip) result.Add(preset);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// ジェスチャ表情メニューの項目を、FaceFix の値（1 から順）つきで返す。UseGestureFaceMenu が false なら空。
+        /// 並びは「基本（Default）→ プリセット 1 → …」で、各セットの中は
+        ///   Both モード: 左手のジェスチャー 1〜7 → 右手のジェスチャー 1〜7
+        ///   Either モード: ジェスチャー 1〜7
+        /// クリップが無いジェスチャーは項目にならず、値も使わない。
+        /// Generator・メニュー作成・アイコン撮影の全てで同じ割り当てを使うための関数。
+        /// </summary>
+        public static List<GestureFaceEntry> GetGestureFaceEntries(Config config)
+        {
+            var result = new List<GestureFaceEntry>();
+            if (config == null || !config.UseGestureFaceMenu) return result;
+
+            var nextValue = 1;
+            AddGestureFaceSet(result, config.HandMode, config.Gestures, 0, DefaultGestureSetName, ref nextValue);
+
+            var presets = GetActivePresets(config);
+            for (var p = 0; p < presets.Count; p++)
+            {
+                var presetName = string.IsNullOrWhiteSpace(presets[p].Name) ? $"Preset {p + 1}" : presets[p].Name.Trim();
+                AddGestureFaceSet(result, config.HandMode, presets[p].Gestures, p + 1, presetName, ref nextValue);
+            }
+
+            return result;
+        }
+
+        private static void AddGestureFaceSet(
+            List<GestureFaceEntry> result,
+            HandMode handMode,
+            GestureDef[] gestures,
+            int setIndex,
+            string setName,
+            ref int nextValue)
+        {
+            if (gestures == null) return;
+
+            if (handMode == HandMode.Both)
+            {
+                // 左手: Clip (= ClipLeft)
+                foreach (var gesture in gestures)
+                {
+                    if (gesture.Clip == null) continue;
+                    result.Add(new GestureFaceEntry(setIndex, setName, gesture.Name, gesture.Value,
+                        GestureFaceSide.Left, gesture.Clip, nextValue++));
+                }
+                // 右手: ClipRight が null なら Clip を流用（BuildBothMode と同じ）
+                foreach (var gesture in gestures)
+                {
+                    var clipR = gesture.ClipRight ?? gesture.Clip;
+                    if (clipR == null) continue;
+                    result.Add(new GestureFaceEntry(setIndex, setName, gesture.Name, gesture.Value,
+                        GestureFaceSide.Right, clipR, nextValue++));
+                }
+            }
+            else
+            {
+                foreach (var gesture in gestures)
+                {
+                    if (gesture.Clip == null) continue;
+                    result.Add(new GestureFaceEntry(setIndex, setName, gesture.Name, gesture.Value,
+                        GestureFaceSide.None, gesture.Clip, nextValue++));
+                }
+            }
+        }
+
+        /// <summary>ジェスチャ表情メニューが使う FaceFix の値の個数。既存の FaceFix スロット（1〜8）の値は、この数だけ後ろにずれる。</summary>
+        public static int GetGestureFaceOffset(Config config)
+        {
+            return GetGestureFaceEntries(config).Count;
+        }
+
+        /// <summary>
+        /// FaceFix の値でクリップを引ける配列を返す（インデックス = FaceFix の値 - 1）。
+        /// 先頭がジェスチャ表情、その後ろが既存の FaceFix スロット。クリップが無い位置は null。
+        /// アイコン撮影（FaceFix_1.png〜）とメニューのアイコン設定が、この並びを使う。
+        /// </summary>
+        public static AnimationClip[] GetFixClipSlots(Config config)
+        {
+            var entries = GetGestureFaceEntries(config);
+            var fixClips = config != null ? config.FaceFixClips : null;
+            var slotCount = fixClips != null ? fixClips.Length : yulEmoNDMFComponent.FaceFixSlotCount;
+
+            var result = new AnimationClip[entries.Count + slotCount];
+            foreach (var entry in entries)
+            {
+                result[entry.FixValue - 1] = entry.Clip;
+            }
+
+            if (config != null && config.UseFaceFix && fixClips != null)
+            {
+                for (var i = 0; i < fixClips.Length; i++)
+                {
+                    result[entries.Count + i] = fixClips[i];
+                }
+            }
+
+            return result;
+        }
 
         /// <summary>
         /// assetPath (例: "Assets/21Emo/Generated/21Facial_Both.controller") に
@@ -202,6 +432,34 @@ namespace yulEmo
             var faceFix      = fx.IntParameter("FaceFix");
             var faceLock     = fx.BoolParameter("FaceLock");
 
+            // ジェスチャープリセット用パラメータ（1 個: Bool / 2 個以上: Int / 0 個: 作らない）
+            var presets = GetActivePresets(config);
+            AacFlBoolParameter presetBool = null;
+            AacFlIntParameter presetInt = null;
+            if (presets.Count == 1)
+            {
+                presetBool = fx.BoolParameter(FacePresetParameter);
+            }
+            else if (presets.Count >= 2)
+            {
+                presetInt = fx.IntParameter(FacePresetParameter);
+            }
+
+            // index 0 = 基本、1〜N = プリセット。プリセットが無い場合は null（条件を付けない）。
+            IAacFlCondition PresetCondition(int index)
+            {
+                if (presetBool != null)
+                {
+                    if (index == 0) return presetBool.IsFalse();
+                    return presetBool.IsTrue();
+                }
+                if (presetInt != null)
+                {
+                    return presetInt.IsEqualTo(index);
+                }
+                return null;
+            }
+
             AacFlFloatParameter weightLeft  = null;
             AacFlFloatParameter weightRight = null;
             if (config.UseGestureWeight)
@@ -228,15 +486,28 @@ namespace yulEmo
             var disableRules = ResolveDisableRules(fx, config.DisableRules);
 
             // ─────────────────────────────────────────────────
+            // ジェスチャ表情メニュー用ステート（Idle → State → Exit、FaceFix で選ぶ）
+            // Idle からの遷移は先に作った方が優先されるため、通常のジェスチャーステートより前に作る
+            // （FaceFix で選んだ表情を、ジェスチャーより優先する）。
+            // ─────────────────────────────────────────────────
+            var gestureFaceEntries = GetGestureFaceEntries(config);
+            foreach (var entry in gestureFaceEntries)
+            {
+                BuildGestureFaceState(fx, config, idle, entry, faceFix, disableRules);
+            }
+
+            // ─────────────────────────────────────────────────
             // ジェスチャーステート（Entry/Exit 方式: Idle → State → Exit）
             // ─────────────────────────────────────────────────
-            if (config.HandMode == HandMode.Both)
+            // 基本のジェスチャー表情（FacePreset = 0 / False）
+            BuildGestureSet(fx, config, idle, config.Gestures, string.Empty, PresetCondition(0),
+                gestureLeft, gestureRight, faceLock, disableRules, weightLeft, weightRight);
+
+            // 追加プリセット（FacePreset = 1〜N / True）。ステート名は "P1_Fist_L" のように接頭辞を付ける
+            for (var p = 0; p < presets.Count; p++)
             {
-                BuildBothMode(fx, config, idle, gestureLeft, gestureRight, faceLock, disableRules, weightLeft, weightRight);
-            }
-            else
-            {
-                BuildEitherMode(fx, config, idle, gestureLeft, gestureRight, faceLock, disableRules, weightLeft);
+                BuildGestureSet(fx, config, idle, presets[p].Gestures, $"P{p + 1}_", PresetCondition(p + 1),
+                    gestureLeft, gestureRight, faceLock, disableRules, weightLeft, weightRight);
             }
 
             // ─────────────────────────────────────────────────
@@ -244,14 +515,20 @@ namespace yulEmo
             // ─────────────────────────────────────────────────
             if (config.UseFaceFix && config.FaceFixClips != null)
             {
+                // ジェスチャ表情メニューを使う場合、FaceFix の値はジェスチャ表情が先に使うので、その分だけ後ろにずらす
+                var faceFixOffset = gestureFaceEntries.Count;
+
                 for (var i = 0; i < config.FaceFixClips.Length; i++)
                 {
                     var clip = config.FaceFixClips[i];
                     if (clip == null) continue;
 
-                    var value = i + 1;
-                    // ステート名は画像に合わせて数字 (1〜8)
-                    var state = fx.NewState(value.ToString()).WithAnimation(clip);
+                    var value = faceFixOffset + i + 1;
+                    // ステート名は画像に合わせてスロット番号 (1〜8)。ずらした値ではなくスロット番号なので、読み込み時に判別できる
+                    var state = fx.NewState((i + 1).ToString()).WithAnimation(clip);
+
+                    // 固定表情を選んだら FaceLock を False に戻す（Parameter Driver）
+                    SetBoolDriver(state, "FaceLock", false);
 
                     // Any State からの遷移（FaceFix == value のみ。FaceLock.IsTrue は不要）
                     state.TransitionsFromAny()
@@ -315,13 +592,64 @@ namespace yulEmo
             controller.layers = layers;
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // Both モード: Idle → 各L/Rステート → Exit
-        // ─────────────────────────────────────────────────────────────
-        private static void BuildBothMode(
+        /// <summary>
+        /// ジェスチャ表情メニューの 1 項目分のステートと遷移を作る。
+        ///   Idle → State: FaceFix == value [&& 無効化ルールが全て不成立]
+        ///   State → Exit: FaceFix != value（と、無効化ルールが成立したとき）
+        /// </summary>
+        private static void BuildGestureFaceState(
             AacFlLayer fx,
             Config config,
             AacFlState idle,
+            GestureFaceEntry entry,
+            AacFlIntParameter faceFix,
+            IReadOnlyList<DisableConditionPair> disableRules)
+        {
+            // ステート名: "GestureFix_Fist_L" / プリセットは "GestureFix_P1_Fist_L" / Either は左右の接尾辞なし
+            var name = GestureFixStatePrefix
+                + (entry.SetIndex > 0 ? $"P{entry.SetIndex}_" : string.Empty)
+                + entry.GestureName
+                + (entry.Side == GestureFaceSide.Left ? "_L" : entry.Side == GestureFaceSide.Right ? "_R" : string.Empty);
+
+            var state = fx.NewState(name).WithAnimation(entry.Clip);
+            if (config.UseTrackingControl) SetEyesTracking(state, animation: true);
+
+            // 固定表情を選んだら FaceLock を False に戻す（FaceFix ステートと同じ）
+            SetBoolDriver(state, "FaceLock", false);
+
+            // Idle から（FaceFix == value。FaceLock の条件は FaceFix ステートと同じく不要）
+            var to = idle.TransitionsTo(state)
+                .WithTransitionDurationSeconds(0.1f)
+                .When(faceFix.IsEqualTo(entry.FixValue));
+            AddDisableGuards(to, disableRules);
+
+            // Exit へ（FaceFix != value）
+            state.Exits()
+                .WithTransitionDurationSeconds(0.1f)
+                .When(faceFix.IsNotEqualTo(entry.FixValue));
+
+            // 無効化パラメータが True なら強制的に Exit（→ Idle）
+            AddDisableExit(state, disableRules);
+        }
+
+        /// <summary>Idle → ジェスチャーステートの遷移に、プリセットの条件を AND で追加する（条件が null なら何もしない）。</summary>
+        private static void AddPresetGuard(AacFlTransitionContinuation transition, IAacFlCondition presetCondition)
+        {
+            if (presetCondition == null) return;
+            transition.And(presetCondition);
+        }
+
+        /// <summary>
+        /// ジェスチャー表情 1 セット分（基本 or プリセット 1 つ）のステートと遷移を作る。
+        /// namePrefix はステート名の接頭辞、presetCondition は Idle からの遷移に足す FacePreset の条件。
+        /// </summary>
+        private static void BuildGestureSet(
+            AacFlLayer fx,
+            Config config,
+            AacFlState idle,
+            GestureDef[] gestures,
+            string namePrefix,
+            IAacFlCondition presetCondition,
             AacFlIntParameter gestureLeft,
             AacFlIntParameter gestureRight,
             AacFlBoolParameter faceLock,
@@ -329,13 +657,44 @@ namespace yulEmo
             AacFlFloatParameter weightLeft,
             AacFlFloatParameter weightRight)
         {
-            foreach (var gesture in config.Gestures)
+            if (gestures == null) return;
+
+            if (config.HandMode == HandMode.Both)
+            {
+                BuildBothMode(fx, config, idle, gestures, namePrefix, presetCondition,
+                    gestureLeft, gestureRight, faceLock, disableRules, weightLeft, weightRight);
+            }
+            else
+            {
+                BuildEitherMode(fx, config, idle, gestures, namePrefix, presetCondition,
+                    gestureLeft, gestureRight, faceLock, disableRules, weightLeft);
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // Both モード: Idle → 各L/Rステート → Exit
+        // ─────────────────────────────────────────────────────────────
+        private static void BuildBothMode(
+            AacFlLayer fx,
+            Config config,
+            AacFlState idle,
+            GestureDef[] gestures,
+            string namePrefix,
+            IAacFlCondition presetCondition,
+            AacFlIntParameter gestureLeft,
+            AacFlIntParameter gestureRight,
+            AacFlBoolParameter faceLock,
+            IReadOnlyList<DisableConditionPair> disableRules,
+            AacFlFloatParameter weightLeft,
+            AacFlFloatParameter weightRight)
+        {
+            foreach (var gesture in gestures)
             {
                 // 左手ステート: Clip (= ClipLeft) が null なら作成しない
                 var clipL = gesture.Clip;
                 if (clipL != null)
                 {
-                    var stateL = fx.NewState(gesture.Name + "_L").WithAnimation(clipL);
+                    var stateL = fx.NewState(namePrefix + gesture.Name + "_L").WithAnimation(clipL);
                     if (weightLeft != null) stateL.WithMotionTime(weightLeft);
                     if (config.UseTrackingControl) SetEyesTracking(stateL, animation: true);
 
@@ -344,6 +703,7 @@ namespace yulEmo
                         .WithTransitionDurationSeconds(0.1f)
                         .When(gestureLeft.IsEqualTo(gesture.Value))
                         .And(faceLock.IsFalse());
+                    AddPresetGuard(toL, presetCondition);
                     AddDisableGuards(toL, disableRules);
 
                     // このステートから Exit（GestureLeft != value && FaceLock == false）
@@ -360,7 +720,7 @@ namespace yulEmo
                 var clipR = gesture.ClipRight ?? gesture.Clip;
                 if (clipR != null)
                 {
-                    var stateR = fx.NewState(gesture.Name + "_R").WithAnimation(clipR);
+                    var stateR = fx.NewState(namePrefix + gesture.Name + "_R").WithAnimation(clipR);
                     if (weightRight != null) stateR.WithMotionTime(weightRight);
                     if (config.UseTrackingControl) SetEyesTracking(stateR, animation: true);
 
@@ -369,6 +729,7 @@ namespace yulEmo
                         .WithTransitionDurationSeconds(0.1f)
                         .When(gestureRight.IsEqualTo(gesture.Value))
                         .And(faceLock.IsFalse());
+                    AddPresetGuard(toR, presetCondition);
                     AddDisableGuards(toR, disableRules);
 
                     // このステートから Exit（GestureRight != value && FaceLock == false）
@@ -390,18 +751,21 @@ namespace yulEmo
             AacFlLayer fx,
             Config config,
             AacFlState idle,
+            GestureDef[] gestures,
+            string namePrefix,
+            IAacFlCondition presetCondition,
             AacFlIntParameter gestureLeft,
             AacFlIntParameter gestureRight,
             AacFlBoolParameter faceLock,
             IReadOnlyList<DisableConditionPair> disableRules,
             AacFlFloatParameter weightLeft)
         {
-            foreach (var gesture in config.Gestures)
+            foreach (var gesture in gestures)
             {
                 var clip = gesture.Clip;
                 if (clip == null) continue;
 
-                var state = fx.NewState(gesture.Name).WithAnimation(clip);
+                var state = fx.NewState(namePrefix + gesture.Name).WithAnimation(clip);
                 if (weightLeft != null) state.WithMotionTime(weightLeft);
                 if (config.UseTrackingControl) SetEyesTracking(state, animation: true);
 
@@ -410,12 +774,14 @@ namespace yulEmo
                     .WithTransitionDurationSeconds(0.1f)
                     .When(gestureLeft.IsEqualTo(gesture.Value))
                     .And(faceLock.IsFalse());
+                AddPresetGuard(fromLeft, presetCondition);
                 AddDisableGuards(fromLeft, disableRules);
 
                 var fromRight = idle.TransitionsTo(state)
                     .WithTransitionDurationSeconds(0.1f)
                     .When(gestureRight.IsEqualTo(gesture.Value))
                     .And(faceLock.IsFalse());
+                AddPresetGuard(fromRight, presetCondition);
                 AddDisableGuards(fromRight, disableRules);
 
                 // Exit へ: 左右ともジェスチャーが変わった かつ FaceLock == false
@@ -568,6 +934,21 @@ namespace yulEmo
                     .WithTransitionDurationSeconds(0.1f)
                     .When(rule.Disabled);
             }
+        }
+
+        /// <summary>
+        /// ステートに VRCAvatarParameterDriver を追加し、Bool パラメータを指定の値にする（Set）。
+        /// AAC のバージョン差を避けるため、SetEyesTracking と同様に Behaviour を直接追加している。
+        /// </summary>
+        private static void SetBoolDriver(AacFlState state, string parameterName, bool value)
+        {
+            var driver = state.State.AddStateMachineBehaviour<VRCAvatarParameterDriver>();
+            driver.parameters.Add(new VRC_AvatarParameterDriver.Parameter
+            {
+                type = VRC_AvatarParameterDriver.ChangeType.Set,
+                name = parameterName,
+                value = value ? 1f : 0f,
+            });
         }
 
         /// <summary>

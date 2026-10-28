@@ -2,8 +2,10 @@
     "name": "net.yuleo21.21emo.Editor",
     "rootNamespace": "yulEmo",
     "references": [
+        "net.yuleo21.21emo.Runtime",
         "AnimatorAsCode.V1",
-		"nadena.dev.modular-avatar.core",
+        "nadena.dev.ndmf",
+        "nadena.dev.modular-avatar.core",
         "VRC.SDK3A",
         "VRC.SDK3A.Editor",
         "VRC.SDKBase",
