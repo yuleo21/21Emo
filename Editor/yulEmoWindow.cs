@@ -66,6 +66,9 @@ namespace yulEmo
         // ジェスチャー表情ステートで Eyes & Eyelids を Animation にする (VRCAnimatorTrackingControl)
         private bool _useTrackingControl = true;
 
+        // Idle を経由せず、Any State から各表情へ直接遷移する
+        private bool _skipIdle;
+
         // 表情クリップを「最終フレームだけの 0 フレームアニメーション」に差し替えて使う
         private bool _flattenClips;
         private string _flattenFolder;
@@ -80,7 +83,11 @@ namespace yulEmo
             public float Value;
         }
 
+        // 表情を強制的に Idle にするルール
         private readonly List<DisableRuleEntry> _disableRules = new List<DisableRuleEntry>();
+
+        // 表情変更を無効にする（Exit の条件に加える）ルール
+        private readonly List<DisableRuleEntry> _freezeRules = new List<DisableRuleEntry>();
 
         // 型ごとに選べる条件（Animator の仕様: Bool=If/IfNot, Int=Greater/Less/Equals/NotEqual, Float=Greater/Less）
         private static readonly yulEmoGenerator.DisableCondition[] BoolConditions =
@@ -294,6 +301,16 @@ namespace yulEmo
                     "Idle には Tracking へ戻す設定を追加します。FaceFix ステートには追加されません。"),
                 _useTrackingControl);
 
+            _skipIdle = EditorGUILayout.ToggleLeft(
+                new GUIContent(
+                    "Idle を挟まずに表情を切り替える（Any State から直接遷移）",
+                    "オフ（標準）: Entry → Idle → 各表情 → Exit（→ Idle）\n" +
+                    "オン: 各表情へ Any State から直接遷移します。ある表情から別の表情へ、Idle を経由せずに切り替わります。\n" +
+                    "・何も押していないとき（ジェスチャー 0）は Exit → Idle に戻ります。\n" +
+                    "・FaceFix で使っている値のときは、ジェスチャー表情へ遷移しません（FaceFix が優先されます）。\n" +
+                    "・FaceLock / 無効化ルール / FacePreset の条件は標準と同じように働きます。"),
+                _skipIdle);
+
             _flattenClips = EditorGUILayout.ToggleLeft(
                 new GUIContent(
                     "クリップを最終フレームだけの 0 フレームアニメーションに差し替える",
@@ -304,28 +321,40 @@ namespace yulEmo
                 _flattenClips);
 
             EditorGUILayout.Space(4);
-            DrawDisableRules();
+            DrawRuleList(
+                _disableRules,
+                "表情を強制的にIdleにするパラメータ",
+                "いずれかの条件が成立している間は、Idle からジェスチャーステートへ遷移せず、\n" +
+                "ジェスチャーステートにいる場合も Idle へ戻されます（OR 条件）。\n" +
+                "※ パラメータの宣言（Expression Parameters 等）は行いません。\n" +
+                "※ Float は Animator の仕様上 Greater / Less のみです。しきい値とちょうど同じ値のときは、\n" +
+                "   成立にも不成立にもならず、Idle から動かなくなります。",
+                "※ 未設定の場合、強制的に Idle にする処理は行いません。");
+
+            EditorGUILayout.Space(4);
+            DrawRuleList(
+                _freezeRules,
+                "表情変更を無効にするパラメータ",
+                "ここで指定した条件が成立している間は、ジェスチャーの表情ステートから Exit する遷移に\n" +
+                "「その条件が成立しない」という条件が追加され、表情が切り替わらなくなります（表情が固定されます）。\n" +
+                "例: AllowFaceChange を「Bool / False」にすると、Exit の条件は\n" +
+                "「GestureRight != 値」に加えて「AllowFaceChange == True」になります。\n" +
+                "複数指定したときは、どれか 1 つでも成立している間は固定されます。\n" +
+                "※ パラメータの宣言（Expression Parameters 等）は行いません。",
+                "※ 未設定の場合、表情の固定は行いません。");
         }
 
         // ─────────────────────────────────────────────────────────────
-        // 表情変更を無効にするパラメータ（複数・型/条件指定）
+        // パラメータ条件のリスト（複数・型/条件指定）
         // ─────────────────────────────────────────────────────────────
-        private void DrawDisableRules()
+        private void DrawRuleList(List<DisableRuleEntry> rules, string title, string tooltip, string emptyNote)
         {
-            EditorGUILayout.LabelField(
-                new GUIContent(
-                    "表情変更を無効にするパラメータ",
-                    "いずれかの条件が成立している間は、Idle からジェスチャーステートへ遷移せず、\n" +
-                    "ジェスチャーステートにいる場合も Idle へ戻されます（OR 条件）。\n" +
-                    "※ パラメータの宣言（Expression Parameters 等）は行いません。\n" +
-                    "※ Float は Animator の仕様上 Greater / Less のみです。しきい値とちょうど同じ値のときは、\n" +
-                    "   無効にも有効にもならず、Idle から動かなくなります。"),
-                EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(new GUIContent(title, tooltip), EditorStyles.boldLabel);
 
             var removeIndex = -1;
-            for (var i = 0; i < _disableRules.Count; i++)
+            for (var i = 0; i < rules.Count; i++)
             {
-                var rule = _disableRules[i];
+                var rule = rules[i];
 
                 EditorGUILayout.BeginHorizontal();
                 rule.Name = EditorGUILayout.TextField(rule.Name);
@@ -366,17 +395,17 @@ namespace yulEmo
 
             if (removeIndex >= 0)
             {
-                _disableRules.RemoveAt(removeIndex);
+                rules.RemoveAt(removeIndex);
             }
 
             if (GUILayout.Button("＋ パラメータを追加", GUILayout.Width(160)))
             {
-                _disableRules.Add(new DisableRuleEntry());
+                rules.Add(new DisableRuleEntry());
             }
 
-            if (_disableRules.Count == 0)
+            if (rules.Count == 0)
             {
-                EditorGUILayout.LabelField("※ 未設定の場合、表情変更の無効化は行いません。", EditorStyles.miniLabel);
+                EditorGUILayout.LabelField(emptyNote, EditorStyles.miniLabel);
             }
         }
 
@@ -400,10 +429,10 @@ namespace yulEmo
             }
         }
 
-        private yulEmoGenerator.DisableRule[] BuildDisableRules()
+        private static yulEmoGenerator.DisableRule[] BuildDisableRules(List<DisableRuleEntry> entries)
         {
             var rules = new List<yulEmoGenerator.DisableRule>();
-            foreach (var entry in _disableRules)
+            foreach (var entry in entries)
             {
                 if (string.IsNullOrWhiteSpace(entry.Name)) continue;
                 rules.Add(new yulEmoGenerator.DisableRule(entry.Name.Trim(), entry.Type, entry.Condition, entry.Value));
@@ -792,6 +821,7 @@ namespace yulEmo
                 idleClip = _idleClip,
                 useGestureWeight = _useGestureWeight,
                 useTrackingControl = _useTrackingControl,
+                skipIdle = _skipIdle,
                 flattenClips = _flattenClips,
                 useGestureFaceMenu = _useGestureFaceMenu,
                 useFaceFix = _useFaceFix,
@@ -832,6 +862,17 @@ namespace yulEmo
                 });
             }
 
+            foreach (var rule in _freezeRules)
+            {
+                s.freezeRules.Add(new yulEmoSettingsSnapshot.DisableRuleData
+                {
+                    name = rule.Name,
+                    type = (int)rule.Type,
+                    condition = (int)rule.Condition,
+                    value = rule.Value,
+                });
+            }
+
             s.originalFacialClips.AddRange(_originalFacialClips);
             return s;
         }
@@ -844,6 +885,7 @@ namespace yulEmo
             _idleClip = s.idleClip;
             _useGestureWeight = s.useGestureWeight;
             _useTrackingControl = s.useTrackingControl;
+            _skipIdle = s.skipIdle;
             _flattenClips = s.flattenClips;
             _useGestureFaceMenu = s.useGestureFaceMenu;
             _useFaceFix = s.useFaceFix;
@@ -885,6 +927,21 @@ namespace yulEmo
                     Condition = (yulEmoGenerator.DisableCondition)data.condition,
                     Value = data.value,
                 });
+            }
+
+            _freezeRules.Clear();
+            if (s.freezeRules != null)
+            {
+                foreach (var data in s.freezeRules)
+                {
+                    _freezeRules.Add(new DisableRuleEntry
+                    {
+                        Name = data.name ?? string.Empty,
+                        Type = (yulEmoGenerator.DisableParameterType)data.type,
+                        Condition = (yulEmoGenerator.DisableCondition)data.condition,
+                        Value = data.value,
+                    });
+                }
             }
 
             _originalFacialClips.Clear();
@@ -1683,6 +1740,18 @@ namespace yulEmo
                 : $"{avatarName}_21Facial_{stamp}";
         }
 
+        /// <summary>アバター直下に、セットアップ済みの「21Emo」オブジェクトがあるか（TrySetup が作り直す対象と同じ判定）。</summary>
+        private static bool HasExistingEmoObject(GameObject avatar)
+        {
+            if (avatar == null) return false;
+
+            var descriptor = avatar.GetComponentInParent<VRCAvatarDescriptor>();
+            if (descriptor == null) descriptor = avatar.GetComponentInChildren<VRCAvatarDescriptor>();
+            if (descriptor == null) return false;
+
+            return descriptor.transform.Find(yulEmoModularAvatarSetup.RootObjectName) != null;
+        }
+
         private void Generate()
         {
             var controllerName = string.IsNullOrWhiteSpace(_controllerName)
@@ -1693,6 +1762,21 @@ namespace yulEmo
             {
                 EditorUtility.DisplayDialog("21Emo", "保存先フォルダは Assets 以下のパスで指定してください。", "OK");
                 return;
+            }
+
+            // 既にアバターに「21Emo」オブジェクトがある場合は、作り直す（上書きする）前に確認する。
+            // コントローラーを作る前に聞くので、キャンセルしても何も変更されない。
+            if (_setupModularAvatar && _avatarObject != null && HasExistingEmoObject(_avatarObject))
+            {
+                var overwriteEmo = EditorUtility.DisplayDialog(
+                    "21Emo",
+                    $"このアバターには既に「{yulEmoModularAvatarSetup.RootObjectName}」オブジェクトがあります。\n" +
+                    "上書きすると、「21Emo」オブジェクトを削除して作り直します。\n" +
+                    "（手で追加したコンポーネントやメニューの変更、手動で設定したアイコンは失われます。Undo で元に戻せます）\n\n" +
+                    "上書きしますか？",
+                    "上書きする",
+                    "キャンセル");
+                if (!overwriteEmo) return;
             }
 
             EnsureFolderExists(_outputFolder.TrimEnd('/'));
@@ -1872,7 +1956,9 @@ namespace yulEmo
                 UseGestureFaceMenu = _useGestureFaceMenu && _setupModularAvatar && _avatarObject != null,
                 DefaultFace      = defaultFace,
                 UseTrackingControl = _useTrackingControl,
-                DisableRules     = BuildDisableRules(),
+                SkipIdle         = _skipIdle,
+                DisableRules     = BuildDisableRules(_disableRules),
+                FreezeRules      = BuildDisableRules(_freezeRules),
             };
         }
     }

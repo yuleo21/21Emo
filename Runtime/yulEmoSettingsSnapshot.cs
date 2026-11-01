@@ -47,6 +47,7 @@ namespace yulEmo
         public bool useGestureWeight;
         public bool useTrackingControl = true;
         public bool flattenClips;
+        public bool skipIdle;
 
         // プリセット・ジェスチャ表情メニュー
         public List<PresetData> presets = new List<PresetData>();
@@ -57,8 +58,11 @@ namespace yulEmo
         public AnimationClip[] faceFixClips = new AnimationClip[FaceFixSlotCount];
         public string[] faceFixNames = new string[FaceFixSlotCount];
 
-        // 表情変更を無効にするルール
+        // 表情を強制的に Idle にするルール（旧名: 表情変更を無効にするルール。保存済みデータとの互換のため名前は disableRules のまま）
         public List<DisableRuleData> disableRules = new List<DisableRuleData>();
+
+        // 表情変更を無効にするルール（ジェスチャー表情から Exit する遷移の条件に加える）
+        public List<DisableRuleData> freezeRules = new List<DisableRuleData>();
 
         // 元の表情との干渉対策
         public bool resetOriginalFace = true;

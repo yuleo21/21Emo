@@ -18,6 +18,8 @@ namespace yulEmo
         {
             serializedObject.Update();
 
+            EditorGUILayout.LabelField("21Emo Settings", EditorStyles.boldLabel);
+            EditorGUILayout.Space(2);
             EditorGUILayout.LabelField("FaceFix アイコン", EditorStyles.boldLabel);
             EditorGUILayout.PropertyField(serializedObject.FindProperty("recaptureOnBuild"),
                 new GUIContent("ビルド時に撮影し直す", "オンにすると、ビルドのたびにアイコンを撮影し直してメニューに設定します。\n下の「撮影時に NDMF を適用する」がオンなら、VRChat SDK からのビルド・アップロードでは NDMF を適用した状態で撮影します。\nそれ以外の場面（NDMF の手動実行など）では、NDMF を適用せずに撮影します。"));

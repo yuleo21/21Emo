@@ -566,6 +566,12 @@ namespace yulEmo
                 throw new MissingMethodException("NDMF の AvatarProcessor.ProcessAvatar(GameObject) が見つかりません。");
             }
 
+            // NDMF 内の Avatar Optimizer（OptimizationMetrics）が、フォーマット未設定の RenderTexture を持つアバターで
+            // 「Unsupported texture type」というエラーログを出すことがある。撮影の結果には影響しないので、
+            // NDMF を適用している間だけ、このメッセージに限ってログに出さない（他のログはそのまま出す）。
+            var logger = Debug.unityLogger;
+            var originalHandler = logger.logHandler;
+            logger.logHandler = new NoiseFilterLogHandler(originalHandler);
             try
             {
                 target.Invoke(null, args);
@@ -573,6 +579,36 @@ namespace yulEmo
             catch (TargetInvocationException e) when (e.InnerException != null)
             {
                 throw e.InnerException;
+            }
+            finally
+            {
+                logger.logHandler = originalHandler;
+            }
+        }
+
+        /// <summary>特定のメッセージだけを捨て、それ以外は元のログ出力へそのまま渡す。</summary>
+        private sealed class NoiseFilterLogHandler : ILogHandler
+        {
+            private const string IgnoredPrefix = "Unsupported texture type. assuming";
+
+            private readonly ILogHandler _inner;
+
+            public NoiseFilterLogHandler(ILogHandler inner)
+            {
+                _inner = inner;
+            }
+
+            public void LogFormat(LogType logType, UnityEngine.Object context, string format, params object[] args)
+            {
+                var text = args != null && args.Length > 0 && args[0] != null ? args[0].ToString() : format;
+                if (text != null && text.StartsWith(IgnoredPrefix, StringComparison.Ordinal)) return;
+
+                _inner.LogFormat(logType, context, format, args);
+            }
+
+            public void LogException(Exception exception, UnityEngine.Object context)
+            {
+                _inner.LogException(exception, context);
             }
         }
 

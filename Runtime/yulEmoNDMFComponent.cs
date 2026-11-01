@@ -16,7 +16,7 @@ namespace yulEmo
     /// IEditorOnly なので、アップロードされるアバターには含まれない。
     /// </summary>
     [DisallowMultipleComponent]
-    [AddComponentMenu("21tools/21Emo NDMF Settings")]
+    [AddComponentMenu("21tools/21Emo Settings")]
     public class yulEmoNDMFComponent : MonoBehaviour, IEditorOnly
     {
         public const int FaceFixSlotCount = 8;

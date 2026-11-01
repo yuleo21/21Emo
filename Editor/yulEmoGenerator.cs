@@ -37,6 +37,14 @@ namespace yulEmo
     ///   ジェスチャープリセット:
     ///     - 基本のジェスチャー表情と、各プリセットのジェスチャー表情で、それぞれ別のステート群を作る
     ///     - Idle → 各ジェスチャーステートの条件に FacePreset の条件を追加（基本=0/False, プリセットN=N/True）
+    ///   表情を強制的に Idle にするパラメータ（Config.DisableRules）は上記の「無効化ルール」。
+    ///   表情変更を無効にするパラメータ（Config.FreezeRules）:
+    ///     - 各ジェスチャーステート → Exit の遷移に、全ルールの「成立しない」条件を AND で追加（ルールが成立している間は表情が固定される）
+    ///       例: AllowFaceChange を False で指定 → Exit の条件は「Gesture != value && FaceLock == false && AllowFaceChange == True」
+    ///   Idle を挟まないモード（Config.SkipIdle）:
+    ///     - Entry → 各表情ステート（Idle → 表情 と同じ条件）。どの条件も成立しないときだけ、デフォルトステートの Idle に入る
+    ///     - Idle → Exit（各 Entry 遷移と同じ条件。Idle にいる間に条件が成立したら Entry へ戻して表情へ入る）
+    ///     - 各表情ステート → Exit → Entry なので、表情から別の表情へ Idle を挟まずに切り替わる
     ///   FaceFix ステート (1〜8):
     ///     - Any State → 各 FaceFix ステート（条件: FaceFix == value, Duration: 0.1s） ※FaceLock条件は不要
     ///     - 各 FaceFix ステート → Exit（条件: FaceFix != value, Duration: 0.1s）
@@ -251,11 +259,60 @@ namespace yulEmo
             public bool UseTrackingControl;
 
             /// <summary>
-            /// 表情変更を無効にするルール（複数可）。null / 空なら使用しない。
+            /// 表情を強制的に Idle にするルール（複数可）。null / 空なら使用しない。
             /// いずれかのルールが成立している間は、Idle からジェスチャーステートへ遷移せず、
             /// ジェスチャーステートにいる場合も Exit（→ Idle）へ強制的に戻る。
             /// </summary>
             public DisableRule[] DisableRules;
+
+            /// <summary>
+            /// 表情変更を無効にするルール（複数可）。null / 空なら使用しない。
+            /// ジェスチャーステートから Exit する遷移（Gesture != value など）に、各ルールの「成立しない」条件を AND で追加する。
+            /// 例: AllowFaceChange を Bool / False で指定すると、Exit の条件は「Gesture != value」に加えて「AllowFaceChange == True」になる。
+            /// いずれかのルールが成立している間は Exit できず、表情が固定される。
+            /// </summary>
+            public DisableRule[] FreezeRules;
+
+            /// <summary>
+            /// true の場合、Idle を経由せず、Entry から各ジェスチャーステート・ジェスチャ表情ステートへ直接遷移する（Entry/Exit 方式）。
+            ///   Entry → 各表情（Idle → 表情 と同じ条件）。どの条件も成立しないときだけ、デフォルトステートの Idle に入る。
+            ///   各表情 → Exit → Entry なので、表情から別の表情へは Idle を挟まずに切り替わる。
+            ///   Idle は、Entry の条件が成立したら Exit する（Idle → Exit に、各 Entry 遷移と同じ条件を付ける）。
+            /// Entry の遷移は作成順に評価されるので、ジェスチャ表情メニュー（FaceFix）がジェスチャーより優先される。
+            /// </summary>
+            public bool SkipIdle;
+        }
+
+        /// <summary>
+        /// Idle から state への遷移を作る。
+        /// 通常: Idle → state。
+        /// direct（Idle を挟まない）: Entry → state と、Idle → Exit（同じ条件）の 2 本を作る。
+        /// first は最初の条件、extra は同じ条件を追加するための処理（遷移ごとに呼ばれる）。
+        /// </summary>
+        private static void LinkFromIdle(
+            AacFlLayer fx,
+            AacFlState idle,
+            AacFlState state,
+            bool direct,
+            IAacFlCondition first,
+            System.Action<AacFlTransitionContinuation> extra)
+        {
+            if (!direct)
+            {
+                var normal = idle.TransitionsTo(state)
+                    .WithTransitionDurationSeconds(0.1f)
+                    .When(first);
+                extra(normal);
+                return;
+            }
+
+            var entry = fx.EntryTransitionsTo(state).When(first);
+            extra(entry);
+
+            var idleExit = idle.Exits()
+                .WithTransitionDurationSeconds(0.1f)
+                .When(first);
+            extra(idleExit);
         }
 
         public const string FacePresetParameter = "FacePreset";
@@ -484,6 +541,8 @@ namespace yulEmo
 
             // 表情変更を無効にするルール（任意・複数）
             var disableRules = ResolveDisableRules(fx, config.DisableRules);
+            // 表情変更を無効にするルール（ジェスチャーステートの Exit 条件に追加する）
+            var freezeRules = ResolveDisableRules(fx, config.FreezeRules);
 
             // ─────────────────────────────────────────────────
             // ジェスチャ表情メニュー用ステート（Idle → State → Exit、FaceFix で選ぶ）
@@ -491,9 +550,12 @@ namespace yulEmo
             // （FaceFix で選んだ表情を、ジェスチャーより優先する）。
             // ─────────────────────────────────────────────────
             var gestureFaceEntries = GetGestureFaceEntries(config);
+
+            var direct = config.SkipIdle;
+
             foreach (var entry in gestureFaceEntries)
             {
-                BuildGestureFaceState(fx, config, idle, entry, faceFix, disableRules);
+                BuildGestureFaceState(fx, config, idle, entry, faceFix, disableRules, direct);
             }
 
             // ─────────────────────────────────────────────────
@@ -501,13 +563,13 @@ namespace yulEmo
             // ─────────────────────────────────────────────────
             // 基本のジェスチャー表情（FacePreset = 0 / False）
             BuildGestureSet(fx, config, idle, config.Gestures, string.Empty, PresetCondition(0),
-                gestureLeft, gestureRight, faceLock, disableRules, weightLeft, weightRight);
+                gestureLeft, gestureRight, faceLock, disableRules, freezeRules, weightLeft, weightRight, direct);
 
             // 追加プリセット（FacePreset = 1〜N / True）。ステート名は "P1_Fist_L" のように接頭辞を付ける
             for (var p = 0; p < presets.Count; p++)
             {
                 BuildGestureSet(fx, config, idle, presets[p].Gestures, $"P{p + 1}_", PresetCondition(p + 1),
-                    gestureLeft, gestureRight, faceLock, disableRules, weightLeft, weightRight);
+                    gestureLeft, gestureRight, faceLock, disableRules, freezeRules, weightLeft, weightRight, direct);
             }
 
             // ─────────────────────────────────────────────────
@@ -603,7 +665,8 @@ namespace yulEmo
             AacFlState idle,
             GestureFaceEntry entry,
             AacFlIntParameter faceFix,
-            IReadOnlyList<DisableConditionPair> disableRules)
+            IReadOnlyList<DisableConditionPair> disableRules,
+            bool direct)
         {
             // ステート名: "GestureFix_Fist_L" / プリセットは "GestureFix_P1_Fist_L" / Either は左右の接尾辞なし
             var name = GestureFixStatePrefix
@@ -618,10 +681,8 @@ namespace yulEmo
             SetBoolDriver(state, "FaceLock", false);
 
             // Idle から（FaceFix == value。FaceLock の条件は FaceFix ステートと同じく不要）
-            var to = idle.TransitionsTo(state)
-                .WithTransitionDurationSeconds(0.1f)
-                .When(faceFix.IsEqualTo(entry.FixValue));
-            AddDisableGuards(to, disableRules);
+            LinkFromIdle(fx, idle, state, direct, faceFix.IsEqualTo(entry.FixValue),
+                t => AddDisableGuards(t, disableRules));
 
             // Exit へ（FaceFix != value）
             state.Exits()
@@ -654,20 +715,22 @@ namespace yulEmo
             AacFlIntParameter gestureRight,
             AacFlBoolParameter faceLock,
             IReadOnlyList<DisableConditionPair> disableRules,
+            IReadOnlyList<DisableConditionPair> freezeRules,
             AacFlFloatParameter weightLeft,
-            AacFlFloatParameter weightRight)
+            AacFlFloatParameter weightRight,
+            bool direct)
         {
             if (gestures == null) return;
 
             if (config.HandMode == HandMode.Both)
             {
                 BuildBothMode(fx, config, idle, gestures, namePrefix, presetCondition,
-                    gestureLeft, gestureRight, faceLock, disableRules, weightLeft, weightRight);
+                    gestureLeft, gestureRight, faceLock, disableRules, freezeRules, weightLeft, weightRight, direct);
             }
             else
             {
                 BuildEitherMode(fx, config, idle, gestures, namePrefix, presetCondition,
-                    gestureLeft, gestureRight, faceLock, disableRules, weightLeft);
+                    gestureLeft, gestureRight, faceLock, disableRules, freezeRules, weightLeft, direct);
             }
         }
 
@@ -685,8 +748,10 @@ namespace yulEmo
             AacFlIntParameter gestureRight,
             AacFlBoolParameter faceLock,
             IReadOnlyList<DisableConditionPair> disableRules,
+            IReadOnlyList<DisableConditionPair> freezeRules,
             AacFlFloatParameter weightLeft,
-            AacFlFloatParameter weightRight)
+            AacFlFloatParameter weightRight,
+            bool direct)
         {
             foreach (var gesture in gestures)
             {
@@ -699,18 +764,20 @@ namespace yulEmo
                     if (config.UseTrackingControl) SetEyesTracking(stateL, animation: true);
 
                     // Idle からこのステートへの遷移（GestureLeft == value && FaceLock == false [&& 無効化ルールが全て不成立]）
-                    var toL = idle.TransitionsTo(stateL)
-                        .WithTransitionDurationSeconds(0.1f)
-                        .When(gestureLeft.IsEqualTo(gesture.Value))
-                        .And(faceLock.IsFalse());
-                    AddPresetGuard(toL, presetCondition);
-                    AddDisableGuards(toL, disableRules);
+                    LinkFromIdle(fx, idle, stateL, direct, gestureLeft.IsEqualTo(gesture.Value), t =>
+                    {
+                        t.And(faceLock.IsFalse());
+                        AddPresetGuard(t, presetCondition);
+                        AddDisableGuards(t, disableRules);
+                    });
 
                     // このステートから Exit（GestureLeft != value && FaceLock == false）
-                    stateL.Exits()
+                    var exitL = stateL.Exits()
                         .WithTransitionDurationSeconds(0.1f)
                         .When(gestureLeft.IsNotEqualTo(gesture.Value))
                         .And(faceLock.IsFalse());
+                    // 表情変更を無効にするルールが成立している間は Exit できない（表情が固定される）
+                    AddDisableGuards(exitL, freezeRules);
 
                     // 無効化パラメータが True なら強制的に Exit（→ Idle）
                     AddDisableExit(stateL, disableRules);
@@ -725,18 +792,20 @@ namespace yulEmo
                     if (config.UseTrackingControl) SetEyesTracking(stateR, animation: true);
 
                     // Idle からこのステートへの遷移（GestureRight == value && FaceLock == false [&& 無効化ルールが全て不成立]）
-                    var toR = idle.TransitionsTo(stateR)
-                        .WithTransitionDurationSeconds(0.1f)
-                        .When(gestureRight.IsEqualTo(gesture.Value))
-                        .And(faceLock.IsFalse());
-                    AddPresetGuard(toR, presetCondition);
-                    AddDisableGuards(toR, disableRules);
+                    LinkFromIdle(fx, idle, stateR, direct, gestureRight.IsEqualTo(gesture.Value), t =>
+                    {
+                        t.And(faceLock.IsFalse());
+                        AddPresetGuard(t, presetCondition);
+                        AddDisableGuards(t, disableRules);
+                    });
 
                     // このステートから Exit（GestureRight != value && FaceLock == false）
-                    stateR.Exits()
+                    var exitR = stateR.Exits()
                         .WithTransitionDurationSeconds(0.1f)
                         .When(gestureRight.IsNotEqualTo(gesture.Value))
                         .And(faceLock.IsFalse());
+                    // 表情変更を無効にするルールが成立している間は Exit できない（表情が固定される）
+                    AddDisableGuards(exitR, freezeRules);
 
                     // 無効化パラメータが True なら強制的に Exit（→ Idle）
                     AddDisableExit(stateR, disableRules);
@@ -758,7 +827,9 @@ namespace yulEmo
             AacFlIntParameter gestureRight,
             AacFlBoolParameter faceLock,
             IReadOnlyList<DisableConditionPair> disableRules,
-            AacFlFloatParameter weightLeft)
+            IReadOnlyList<DisableConditionPair> freezeRules,
+            AacFlFloatParameter weightLeft,
+            bool direct)
         {
             foreach (var gesture in gestures)
             {
@@ -770,26 +841,28 @@ namespace yulEmo
                 if (config.UseTrackingControl) SetEyesTracking(state, animation: true);
 
                 // Idle から: 左手 OR 右手がこのジェスチャー値（FaceLock == false [&& 無効化ルールが全て不成立]）
-                var fromLeft = idle.TransitionsTo(state)
-                    .WithTransitionDurationSeconds(0.1f)
-                    .When(gestureLeft.IsEqualTo(gesture.Value))
-                    .And(faceLock.IsFalse());
-                AddPresetGuard(fromLeft, presetCondition);
-                AddDisableGuards(fromLeft, disableRules);
+                LinkFromIdle(fx, idle, state, direct, gestureLeft.IsEqualTo(gesture.Value), t =>
+                {
+                    t.And(faceLock.IsFalse());
+                    AddPresetGuard(t, presetCondition);
+                    AddDisableGuards(t, disableRules);
+                });
 
-                var fromRight = idle.TransitionsTo(state)
-                    .WithTransitionDurationSeconds(0.1f)
-                    .When(gestureRight.IsEqualTo(gesture.Value))
-                    .And(faceLock.IsFalse());
-                AddPresetGuard(fromRight, presetCondition);
-                AddDisableGuards(fromRight, disableRules);
+                LinkFromIdle(fx, idle, state, direct, gestureRight.IsEqualTo(gesture.Value), t =>
+                {
+                    t.And(faceLock.IsFalse());
+                    AddPresetGuard(t, presetCondition);
+                    AddDisableGuards(t, disableRules);
+                });
 
                 // Exit へ: 左右ともジェスチャーが変わった かつ FaceLock == false
-                state.Exits()
+                var exit = state.Exits()
                     .WithTransitionDurationSeconds(0.1f)
                     .When(gestureLeft.IsNotEqualTo(gesture.Value))
                     .And(gestureRight.IsNotEqualTo(gesture.Value))
                     .And(faceLock.IsFalse());
+                // 表情変更を無効にするルールが成立している間は Exit できない（表情が固定される）
+                AddDisableGuards(exit, freezeRules);
 
                 // 無効化パラメータが True なら強制的に Exit（→ Idle）
                 AddDisableExit(state, disableRules);

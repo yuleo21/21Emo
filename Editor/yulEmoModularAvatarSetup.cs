@@ -134,18 +134,7 @@ namespace yulEmo
             Undo.RegisterCreatedObjectUndo(root, "Create 21Emo");
             root.transform.SetParent(avatarRoot.transform, false);
 
-            // ── MA Merge Animator ─────────────────────────────
-            // クリップのバインディングはアバタールート基準なので Absolute。
-            // WD は UI で選択した値をそのまま使うため、Match Avatar Write Defaults は OFF。
-            var merge = Undo.AddComponent<ModularAvatarMergeAnimator>(root);
-            merge.animator = controller;
-            merge.layerType = VRCAvatarDescriptor.AnimLayerType.FX;
-            merge.deleteAttachedAnimator = false;
-            merge.pathMode = MergeAnimatorPathMode.Absolute;
-            merge.matchAvatarWriteDefaults = false;
-            merge.layerPriority = 0;
-
-            // ── 21Emo NDMF 設定コンポーネント ─────────────────
+            // ── 21Emo Settings コンポーネント（インスペクターの一番上に並べるため、最初に追加する） ─────────────────
             // アイコンの撮影し直し・ビルド時の撮影・クリップの差し替えを担当する。
             var settingsComponent = Undo.AddComponent<yulEmoNDMFComponent>(root);
             settingsComponent.recaptureOnBuild = keptRecapture;
@@ -172,6 +161,17 @@ namespace yulEmo
             // （ジェスチャ表情メニューを使うときは、先頭がジェスチャ表情で、その後ろが FaceFix のスロット 1〜8）
             var gestureFaceEntries = yulEmoGenerator.GetGestureFaceEntries(config);
             settingsComponent.faceFixClips = yulEmoGenerator.GetFixClipSlots(config);
+
+            // ── MA Merge Animator ─────────────────────────────
+            // クリップのバインディングはアバタールート基準なので Absolute。
+            // WD は UI で選択した値をそのまま使うため、Match Avatar Write Defaults は OFF。
+            var merge = Undo.AddComponent<ModularAvatarMergeAnimator>(root);
+            merge.animator = controller;
+            merge.layerType = VRCAvatarDescriptor.AnimLayerType.FX;
+            merge.deleteAttachedAnimator = false;
+            merge.pathMode = MergeAnimatorPathMode.Absolute;
+            merge.matchAvatarWriteDefaults = false;
+            merge.layerPriority = 0;
 
             // ── MA Parameters ─────────────────────────────────
             // FaceFix / FaceLock を明示的に宣言（型を確実に Int / Bool にするため）。
