@@ -11,7 +11,7 @@ namespace yulEmo
     /// 「21Emo」オブジェクトの yulEmoNDMFComponent を、アバターのビルド時に処理する NDMF プラグイン。
     /// （NDMF を適用した状態でのアイコン撮影は、NDMF の処理が始まる前に yulEmoNDMFPreprocess が行う）
     ///
-    /// Modular Avatar より前（Transforming フェーズ）に、アイコンの撮影し直しを行う（recaptureOnBuild がオンのときだけ）。
+    /// Modular Avatar より前（Transforming フェーズ）に、アイコンを撮影し直す（recaptureOnBuild がオンのときだけ）。
     ///      FaceFix のクリップで撮影し、メニューのトグルのアイコンに設定する。
     ///      ビルド中のアバターに NDMF を再度適用すると不安定なため、撮影は NDMF を適用しない状態で行う。
     ///      この時点では Modular Avatar による衣装の統合などは済んでいない。
@@ -22,21 +22,10 @@ namespace yulEmo
         private const string LogPrefix = "[21Emo] NDMF: ";
 
         /// <summary>
-        /// true の間は処理を行わない。ビルド前の撮影で NDMF を適用した複製にも、このプラグインが走るため、
+        /// true の間は処理しない。ビルド前の撮影で NDMF を適用した複製にも、このプラグインが走るため、
         /// それを止めて二重の撮影を防ぐ。
         /// </summary>
         internal static bool SuppressProcessing;
-
-        internal static yulEmoCameraSettings BuildCameraSettings(yulEmoNDMFComponent component)
-        {
-            return new yulEmoCameraSettings
-            {
-                Right = component.cameraRight,
-                Up = component.cameraUp,
-                Forward = component.cameraForward,
-                Fov = component.cameraFov,
-            };
-        }
 
         public override string QualifiedName => "net.yuleo21.21emo";
         public override string DisplayName => "21Emo";
@@ -68,12 +57,7 @@ namespace yulEmo
         private static void RecaptureIcons(BuildContext context, yulEmoNDMFComponent component)
         {
             var clips = component.faceFixClips;
-            var hasClip = false;
-            foreach (var clip in clips)
-            {
-                if (clip != null) hasClip = true;
-            }
-            if (!hasClip) return;
+            if (!component.HasFaceFixClip()) return;
 
             // ビルド前の撮影（NDMF 適用あり）が済んでいれば、その画像を使う。
             // 無ければ、ここで NDMF を適用せずに撮影する（ビルド中のアバターに NDMF を再度適用すると不安定なため）。
@@ -88,7 +72,7 @@ namespace yulEmo
             {
                 // folder = null: ファイルに保存せず、メモリ上のテクスチャを受け取る。
                 icons = yulEmoIconCapturer.CaptureFaceFixIcons(
-                    context.AvatarRootObject, clips, null, BuildCameraSettings(component), false, out message);
+                    context.AvatarRootObject, clips, null, yulEmoCameraSettings.FromComponent(component), false, out message);
             }
 
             foreach (var icon in icons)

@@ -279,7 +279,7 @@ namespace yulEmo
                 + (gestureFaceEntries.Count > 0 ? " + ジェスチャ表情" : "")
                 + (hasFaceFix ? " + FaceFix" : "")
                 + " トグル";
-            message = $"{avatarRoot.name}/{RootObjectName} に Modular Avatar のセットアップを行いました。\n（Merge Animator / Parameters / Menu Installer / {menuSummary}）";
+            message = $"{avatarRoot.name}/{RootObjectName} に Modular Avatar をセットアップしました。\n（Merge Animator / Parameters / Menu Installer / {menuSummary}）";
             return true;
         }
 

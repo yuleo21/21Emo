@@ -427,7 +427,7 @@ namespace yulEmo
         private static Vector3 ComputeFaceCenter(GameObject avatar, Vector3 viewPosition, out float halfExtent, out string source)
         {
             // ViewPosition はアバターのローカル座標なので、ワールド座標へ変換する。
-            // ここを中心にすることで、Head ボーンの位置や姿勢に引っ張られて
+            // ここを中心にすると、Head ボーンの位置や姿勢の影響で
             // アイコンの中心が首元へずれるのを防ぐ。
             var view = avatar.transform.TransformPoint(viewPosition);
             var animator = avatar.GetComponent<Animator>();
@@ -482,7 +482,7 @@ namespace yulEmo
                 try
                 {
                     // 自動最適化（Avatar Optimizer の Trace And Optimize）は、使われていないシェイプキーの削除や
-                    // メッシュの統合を行い、表情が反映されなくなることがあるので、複製からだけ外す。
+                    // メッシュの統合をして、表情が反映されなくなることがあるので、複製からだけ外す。
                     StripAutoOptimizers(clone);
 
                     ProcessWithNDMF(clone);

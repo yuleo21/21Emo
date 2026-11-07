@@ -26,13 +26,8 @@ namespace yulEmo
             {
                 if (!component.recaptureOnBuild || !component.captureWithNDMF) continue;
 
-                var clips = component.faceFixClips;
-                var hasClip = false;
-                foreach (var clip in clips)
-                {
-                    if (clip != null) hasClip = true;
-                }
-                if (!hasClip) continue;
+                if (!component.HasFaceFixClip()) continue;
+				var clips = component.faceFixClips;
 
                 yulEmoNDMFPlugin.SuppressProcessing = true;
                 try
@@ -41,7 +36,7 @@ namespace yulEmo
                         avatarGameObject,
                         clips,
                         null,
-                        yulEmoNDMFPlugin.BuildCameraSettings(component),
+                        yulEmoCameraSettings.FromComponent(component),
                         true,
                         out var message);
                     Debug.Log("[21Emo] NDMF: ビルド前の撮影: " + message);

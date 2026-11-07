@@ -601,7 +601,7 @@ namespace yulEmo
                         "「Lock」の後に「ジェスチャ表情」サブメニューを追加し、Idle 以外の各ジェスチャの表情を選んで固定できるようにします。\n" +
                         "・ジェスチャープリセットがあるときは、「Default」（基本）とプリセット名のサブメニューに分けます。\n" +
                         "・両手用 (Both) のときは、さらに Left / Right のサブメニューに分けます。\n" +
-                        "・FaceFix パラメータを流用し、ジェスチャ表情が 1 から先に使います。下の FaceFix の値はその分だけ後ろにずれます。\n" +
+                        "・FaceFix パラメータを流用し、1 番からジェスチャ表情に割り当てます。下の FaceFix の値はその分だけ後ろにずれます。\n" +
                         "・Idle から各表情への FaceFix による遷移を追加し、表情変更を無効にするパラメータの設定も適用します。\n" +
                         "・メニューのアイコンは、FaceFix と同じように撮影して設定します。\n" +
                         "※ メニューは Modular Avatar で作るため、アバターの指定と、出力先の「Modular Avatar でアバターに組み込む」が必要です。"),
@@ -795,8 +795,7 @@ namespace yulEmo
         {
             if (avatar == null) return null;
 
-            var descriptor = avatar.GetComponentInParent<VRCAvatarDescriptor>();
-            if (descriptor == null) descriptor = avatar.GetComponentInChildren<VRCAvatarDescriptor>();
+            var descriptor = yulEmoEditorUtility.FindDescriptor(avatar);
             if (descriptor == null) return null;
 
             var root = descriptor.transform.Find(yulEmoModularAvatarSetup.RootObjectName);
@@ -1745,8 +1744,7 @@ namespace yulEmo
         {
             if (avatar == null) return false;
 
-            var descriptor = avatar.GetComponentInParent<VRCAvatarDescriptor>();
-            if (descriptor == null) descriptor = avatar.GetComponentInChildren<VRCAvatarDescriptor>();
+            var descriptor = yulEmoEditorUtility.FindDescriptor(avatar);
             if (descriptor == null) return false;
 
             return descriptor.transform.Find(yulEmoModularAvatarSetup.RootObjectName) != null;
@@ -1779,7 +1777,7 @@ namespace yulEmo
                 if (!overwriteEmo) return;
             }
 
-            EnsureFolderExists(_outputFolder.TrimEnd('/'));
+            yulEmoEditorUtility.EnsureFolder(_outputFolder.TrimEnd('/'));
 
             var assetPath = $"{_outputFolder.TrimEnd('/')}/{controllerName}.controller";
 
@@ -1804,7 +1802,7 @@ namespace yulEmo
                 {
                     AssetDatabase.DeleteAsset(_flattenFolder);
                 }
-                EnsureFolderExists(_flattenFolder);
+                yulEmoEditorUtility.EnsureFolder(_flattenFolder);
             }
 
             var config = BuildConfig();
@@ -1848,14 +1846,14 @@ namespace yulEmo
                     if (_captureFaceFixIcons && hasIconClip)
                     {
                         var iconFolder = iconFolderPath;
-                        EnsureFolderExists(iconFolder);
+                        yulEmoEditorUtility.EnsureFolder(iconFolder);
                         var icons = yulEmoIconCapturer.CaptureFaceFixIcons(
                             _avatarObject, iconClips, iconFolder, yulEmoCameraSettings.Current, _captureWithNDMF, out iconMessage);
                         yulEmoModularAvatarSetup.ApplyFaceFixIcons(_avatarObject, icons);
                     }
                     else if (_captureFaceFixIcons)
                     {
-                        iconMessage = "アイコンの撮影を行いませんでした（「4. FaceFixオプション」で FaceFix またはジェスチャ表情メニューを使用する設定になっていない、またはクリップが設定されていません）。";
+                        iconMessage = "アイコンを撮影しませんでした（「4. FaceFixオプション」で FaceFix またはジェスチャ表情メニューを使用する設定になっていないか、クリップが設定されていません）。";
                         Debug.LogWarning("[21Emo] アイコン撮影: " + iconMessage);
                     }
                 }
@@ -1871,23 +1869,6 @@ namespace yulEmo
             }
 
             EditorUtility.DisplayDialog("21Emo", dialogMessage, "OK");
-        }
-
-        private static void EnsureFolderExists(string folder)
-        {
-            if (AssetDatabase.IsValidFolder(folder)) return;
-
-            var parts = folder.Split('/');
-            var current = parts[0];
-            for (var i = 1; i < parts.Length; i++)
-            {
-                var next = current + "/" + parts[i];
-                if (!AssetDatabase.IsValidFolder(next))
-                {
-                    AssetDatabase.CreateFolder(current, parts[i]);
-                }
-                current = next;
-            }
         }
 
         private yulEmoGenerator.Config BuildConfig()

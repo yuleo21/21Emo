@@ -51,10 +51,7 @@ namespace yulEmo
                 {
                     var current = yulEmoCameraSettings.Current;
                     Undo.RecordObject(component, "21Emo: カメラ位置");
-                    component.cameraRight = current.Right;
-                    component.cameraUp = current.Up;
-                    component.cameraForward = current.Forward;
-                    component.cameraFov = current.Fov;
+                    current.ApplyTo(component);
                     EditorUtility.SetDirty(component);
                 }
             }
@@ -178,26 +175,15 @@ namespace yulEmo
             }
 
             var clips = component.faceFixClips;
-            var hasClip = false;
-            foreach (var clip in clips)
-            {
-                if (clip != null) hasClip = true;
-            }
-            if (!hasClip)
+            if (!component.HasFaceFixClip())
             {
                 EditorUtility.DisplayDialog("21Emo", "撮影する FaceFix のクリップが設定されていません。", "OK");
                 return;
             }
 
-            EnsureFolderExists(component.iconFolder.TrimEnd('/'));
+            yulEmoEditorUtility.EnsureFolder(component.iconFolder.TrimEnd('/'));
 
-            var settings = new yulEmoCameraSettings
-            {
-                Right = component.cameraRight,
-                Up = component.cameraUp,
-                Forward = component.cameraForward,
-                Fov = component.cameraFov,
-            };
+            var settings = yulEmoCameraSettings.FromComponent(component);
 
             var icons = yulEmoIconCapturer.CaptureFaceFixIcons(
                 avatar, clips, component.iconFolder, settings, component.captureWithNDMF, out var message);
@@ -208,23 +194,6 @@ namespace yulEmo
                 UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(avatar.scene);
             }
             EditorUtility.DisplayDialog("21Emo", message ?? "アイコンを撮影し直しました。", "OK");
-        }
-
-        private static void EnsureFolderExists(string folder)
-        {
-            if (AssetDatabase.IsValidFolder(folder)) return;
-
-            var parts = folder.Split('/');
-            var current = parts[0];
-            for (var i = 1; i < parts.Length; i++)
-            {
-                var next = current + "/" + parts[i];
-                if (!AssetDatabase.IsValidFolder(next))
-                {
-                    AssetDatabase.CreateFolder(current, parts[i]);
-                }
-                current = next;
-            }
         }
     }
 }

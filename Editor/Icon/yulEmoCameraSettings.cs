@@ -59,6 +59,27 @@ namespace yulEmo
             Fov = DefaultFov;
         }
 
+        /// <summary>コンポーネントに保存されているカメラ位置を取り出す。</summary>
+        public static yulEmoCameraSettings FromComponent(yulEmoNDMFComponent component)
+        {
+            return new yulEmoCameraSettings
+            {
+                Right = component.cameraRight,
+                Up = component.cameraUp,
+                Forward = component.cameraForward,
+                Fov = component.cameraFov,
+            };
+        }
+
+        /// <summary>この設定を、コンポーネントのカメラ位置に書き込む。</summary>
+        public void ApplyTo(yulEmoNDMFComponent component)
+        {
+            component.cameraRight = Right;
+            component.cameraUp = Up;
+            component.cameraForward = Forward;
+            component.cameraFov = Fov;
+        }
+
         /// <summary>範囲外の値を許容範囲に収める。</summary>
         public void Clamp()
         {

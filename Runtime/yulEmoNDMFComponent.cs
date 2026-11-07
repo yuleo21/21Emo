@@ -33,7 +33,7 @@ namespace yulEmo
         [Tooltip("オンにすると、アバターのビルドのたびに FaceFix のアイコンを撮影し直します（撮影は 1 回につき数秒かかります）。")]
         public bool recaptureOnBuild = false;
 
-        [Tooltip("撮影用の複製に NDMF を適用してから撮影するか。\n「今すぐ撮影し直す」と、VRChat SDK からのビルド・アップロード時の撮影で有効です。")]
+        [Tooltip("オンにすると、撮影用の複製に NDMF を適用してから撮影します。\n「今すぐ撮影し直す」と、VRChat SDK からのビルド・アップロード時の撮影で有効です。")]
         public bool captureWithNDMF = true;
 
         // ビルド前（NDMF の処理が始まる前）に撮影したアイコン。保存されない一時データ。
@@ -55,7 +55,7 @@ namespace yulEmo
         [Tooltip("アニメーターを作成したときの、21Emo のウィンドウの設定。ウィンドウに読み込み直すために使います。")]
         public yulEmoSettingsSnapshot settings = new yulEmoSettingsSnapshot();
 
-        [Tooltip("settings に、作成時の設定が保存されているか。古いバージョンで作成したものは false です。")]
+        [Tooltip("settings に作成時の設定が保存されているときは true です。古いバージョンで作成したものは false です。")]
         public bool hasSettings = false;
 
         // ── アニメーション差し替え ──────────────────────────────────
@@ -64,5 +64,16 @@ namespace yulEmo
 
         [Tooltip("オンにすると、差し替え後のクリップを最終フレームだけの 0 フレームのクリップに変換してから差し替えます。")]
         public bool flattenToZeroFrame = false;
+		
+		public bool HasFaceFixClip()
+		{
+			if (faceFixClips == null) return false;
+			foreach (var clip in faceFixClips)
+			{
+				if (clip != null) return true;
+			}
+			return false;
+		}
+				
     }
 }

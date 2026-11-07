@@ -95,7 +95,7 @@ namespace yulEmo
                 _applyNDMF);
             var avatarChanged = EditorGUI.EndChangeCheck();
 
-            if (GUILayout.Button("アバターを読み込み直す"))
+            if (GUILayout.Button("アバターをリロード"))
             {
                 avatarChanged = true;
             }
