@@ -18,9 +18,8 @@ namespace yulEmo
     /// ・「書き出す」で、編集リストの値をキー 1 つのクリップにして保存する。
     ///
     /// プレビューは、このウィンドウの右側に表示する。シーンにある本物のアバターを、専用のカメラで撮って見せる。
-    /// 表情は、本物のアバターのシェイプキーの値を一時的に変えて反映する。
     /// 専用のカメラは親を持たない普通のカメラなので、Scene ビューと同じように NDMF Preview が効く（NDMF の ProxyManager が対象にする）。
-    /// 変えた値は、覚えておいた元の値に戻す（ウィンドウを閉じるとき、シーンの保存、再生、コードの再読み込みの前）。
+    /// 本物のアバターには触らない。表情は、NDMF Preview が描画する「プレビュー用のコピー」にだけ、フィルター（yulEmoFacePreviewFilter）で設定する。
     ///
     /// プレビュー上の操作:  左ドラッグ = 回転 / 右・中ドラッグ = 平行移動 / ホイール = 拡大・縮小
     /// </summary>
@@ -29,8 +28,12 @@ namespace yulEmo
         private const float LeftWidth = 380f;
         private const float RowHeight = 20f;
         private const float ListHeight = 260f;
+        private const int GroupLabelWidth = 110;
         private const int MaxOverlayPoints = 2000;
         private const double ApplyInterval = 0.05;
+
+        /// <summary>この値以下のシェイプキーの値は、設定されていないものとみなす（浮動小数点の誤差を除く）。</summary>
+        private const float SeedMinWeight = 0.01f;
         private const string FolderPrefsKey = "yulEmo.FaceEditor.Folder";
 
         /// <summary>この距離（メッシュ上の長さ、メートル）より小さい移動は「動いていない」とみなす。区切り用のシェイプキーが持つ、ごくわずかな頂点の移動を除くため。</summary>
@@ -43,6 +46,8 @@ namespace yulEmo
             public string Path;
             public string[] Names;
             public Dictionary<string, int> NameToIndex;
+            public yulEmoShapeClassifier.Result Meta;
+            public yulEmoShapeTarget[] Targets;
         }
 
         [Serializable]
@@ -57,7 +62,13 @@ namespace yulEmo
         [SerializeField] private string _fileName = string.Empty;
         [SerializeField] private bool _showSelectedBoxes;
         [SerializeField] private string _search = string.Empty;
+        // 一覧に出さない分類。VRChat 標準と MMD は、標準で隠す
+        [SerializeField] private List<string> _hiddenGroups = DefaultHiddenGroups();
+        [SerializeField] private bool _onlyEditing;
+        [SerializeField] private bool _showGroupFilter;
         [SerializeField] private List<Entry> _entries = new List<Entry>();
+        // 編集リストに、アバターにすでに設定されている値を取り込み済みのアバター（アバターごとに 1 回だけ取り込む）
+        [SerializeField] private GameObject _seededAvatar;
 
         private string _outputFolder;
         private int _rendererIndex;
@@ -65,6 +76,10 @@ namespace yulEmo
         private Vector2 _entryScroll;
         private string _status;
         private GUIStyle _rowStyle;
+        private GUIStyle _groupLabelStyle;
+        private Vector2 _groupScroll;
+        private string _queryText;
+        private yulEmoShapeQuery _query;
 
         private int _hoverShape = -1;
         private int _hoverCandidate = -1;
@@ -75,7 +90,8 @@ namespace yulEmo
         // ── プレビュー ─────────────────────────────────────────────
         private bool _rebuildQueued;
         private bool _dirty;
-        private readonly Dictionary<(SkinnedMeshRenderer, int), float> _touched = new Dictionary<(SkinnedMeshRenderer, int), float>();
+        private readonly yulEmoFacePreviewFilter.State _state = new yulEmoFacePreviewFilter.State();
+        private int _infosVersion;
         private double _lastApply;
         private GameObject _avatarRoot;
         private double _lastRepaint;
@@ -94,8 +110,10 @@ namespace yulEmo
         private GameObject _cameraObject;
         private Camera _cam;
         private RenderTexture _renderTexture;
-        private PreviewSession _emptySession;
-        private bool? _appliedUseNdmfPreview;
+        private PreviewSession _session;
+        private PreviewSession _sessionParent;
+        private bool _sessionUseNdmf;
+        private int _sessionInfosVersion = -1;
 
         private sealed class OverlayBox
         {
@@ -105,6 +123,7 @@ namespace yulEmo
 
         private readonly List<OverlayBox> _boxes = new List<OverlayBox>();
         private bool _dim;
+        private bool _ndmfOffNote;
 
         [MenuItem("21tools/21Emo Face Editor")]
         public static void Open()
@@ -125,6 +144,8 @@ namespace yulEmo
             {
                 window._avatar = avatar;
                 window._entries.Clear();
+                window._seededAvatar = null;
+                window._hiddenGroups = DefaultHiddenGroups();
             }
             window.QueueRebuild();
             window.Show();
@@ -136,10 +157,6 @@ namespace yulEmo
             _outputFolder = EditorPrefs.GetString(FolderPrefsKey, "Assets");
 
             EditorApplication.update += OnEditorUpdate;
-            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
-            AssemblyReloadEvents.beforeAssemblyReload += RestoreWeights;
-            EditorSceneManager.sceneSaving += OnSceneSaving;
-            EditorSceneManager.sceneSaved += OnSceneSaved;
 
             QueueRebuild();
         }
@@ -147,12 +164,7 @@ namespace yulEmo
         private void OnDisable()
         {
             EditorApplication.update -= OnEditorUpdate;
-            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
-            AssemblyReloadEvents.beforeAssemblyReload -= RestoreWeights;
-            EditorSceneManager.sceneSaving -= OnSceneSaving;
-            EditorSceneManager.sceneSaved -= OnSceneSaved;
 
-            RestoreWeights();
             TeardownCamera();
         }
 
@@ -178,7 +190,19 @@ namespace yulEmo
         {
             if (_rowStyle == null)
             {
-                _rowStyle = new GUIStyle(GUI.skin.button) { alignment = TextAnchor.MiddleLeft };
+                // 右側に、分類の名前を重ねて出すため、文字の右に余白を空ける
+                _rowStyle = new GUIStyle(GUI.skin.button)
+                {
+                    alignment = TextAnchor.MiddleLeft,
+                    clipping = TextClipping.Clip,
+                    padding = new RectOffset(6, GroupLabelWidth + 8, 2, 2),
+                };
+                _groupLabelStyle = new GUIStyle(EditorStyles.miniLabel)
+                {
+                    alignment = TextAnchor.MiddleRight,
+                    clipping = TextClipping.Clip,
+                };
+                _groupLabelStyle.normal.textColor = new Color(0.6f, 0.6f, 0.6f, 1f);
             }
 
             var e = Event.current;
@@ -223,7 +247,12 @@ namespace yulEmo
             EditorGUI.BeginChangeCheck();
             _avatar = (GameObject)EditorGUILayout.ObjectField("アバター", _avatar, typeof(GameObject), true);
             var changed = EditorGUI.EndChangeCheck();
-            if (changed) _entries.Clear();
+            if (changed)
+            {
+                _entries.Clear();
+                _seededAvatar = null;
+                _hiddenGroups = DefaultHiddenGroups();
+            }
 
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -243,6 +272,18 @@ namespace yulEmo
             }
         }
 
+        private static List<string> DefaultHiddenGroups()
+        {
+            return new List<string> { yulEmoShapeClassifier.VrchatGroup, yulEmoShapeClassifier.MmdGroup };
+        }
+
+        private void ClearHover()
+        {
+            if (_hoverShape == -1) return;
+            _hoverShape = -1;
+            _dirty = true;
+        }
+
         private void DrawShapeList(Event e)
         {
             EditorGUILayout.LabelField("シェイプキー", EditorStyles.boldLabel);
@@ -258,28 +299,30 @@ namespace yulEmo
             for (var i = 0; i < _infos.Count; i++) labels[i] = _infos[i].Path;
             EditorGUI.BeginChangeCheck();
             _rendererIndex = Mathf.Clamp(EditorGUILayout.Popup("メッシュ", _rendererIndex, labels), 0, _infos.Count - 1);
-            _search = EditorGUILayout.TextField("検索", _search);
+            _search = EditorGUILayout.TextField(
+                new GUIContent("検索",
+                    "スペース: すべての語を含む\n" +
+                    "a|b: どちらかを含む\n" +
+                    "-語: その語を含むものを除く\n" +
+                    "@語: 名前ではなく、分類の名前から探す\n" +
+                    "\"a b\": 空白を含む語\n\n" +
+                    "全角・半角、大文字・小文字、カタカナ・ひらがなは区別しません。\n" +
+                    "「目」と eye のような、日本語と英語の対応語も探します。"),
+                _search);
             if (EditorGUI.EndChangeCheck())
             {
                 _listScroll = Vector2.zero;
-                if (_hoverShape != -1)
-                {
-                    _hoverShape = -1;
-                    _dirty = true;
-                }
+                ClearHover();
             }
 
             var info = _infos[_rendererIndex];
-            var visible = new List<int>();
-            for (var i = 0; i < info.Names.Length; i++)
-            {
-                if (string.IsNullOrEmpty(_search) ||
-                    info.Names[i].IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    visible.Add(i);
-                }
-            }
+            DrawFilterOptions(info);
 
+            var visible = BuildVisibleList(info, out var note);
+            var shapeCount = info.Names.Length - info.Meta.SeparatorCount;
+            EditorGUILayout.LabelField($"{visible.Count} 個を表示（全 {shapeCount} 個）{note}", EditorStyles.miniLabel);
+
+            var showGroup = info.Meta.GroupOrder.Count > 1;
             var listRect = GUILayoutUtility.GetRect(0f, ListHeight, GUILayout.ExpandWidth(true));
             var mouseInView = listRect.Contains(e.mousePosition);
             var contentRect = new Rect(0f, 0f, listRect.width - 16f, visible.Count * RowHeight);
@@ -303,8 +346,124 @@ namespace yulEmo
                 {
                     AddEntry(info.Path, info.Names[shapeIndex]);
                 }
+
+                if (showGroup && e.type == EventType.Repaint)
+                {
+                    var groupRect = new Rect(rowRect.xMax - GroupLabelWidth - 4f, rowRect.y, GroupLabelWidth, rowRect.height);
+                    GUI.Label(groupRect, info.Meta.Group[shapeIndex], _groupLabelStyle);
+                }
             }
             GUI.EndScrollView();
+        }
+
+        /// <summary>「編集中のみ」の切り替えと、分類ごとの表示・非表示。</summary>
+        private void DrawFilterOptions(RendererInfo info)
+        {
+            var groups = info.Meta.GroupOrder;
+            var shown = 0;
+            foreach (var group in groups)
+            {
+                if (!_hiddenGroups.Contains(group)) shown++;
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUI.BeginChangeCheck();
+                _onlyEditing = GUILayout.Toggle(_onlyEditing, "編集中のみ", EditorStyles.miniButton, GUILayout.Width(80f));
+                _showGroupFilter = GUILayout.Toggle(_showGroupFilter, $"分類で絞り込み（{shown}/{groups.Count}）", EditorStyles.miniButton);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    _listScroll = Vector2.zero;
+                    ClearHover();
+                }
+            }
+
+            if (!_showGroupFilter) return;
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("標準に戻す", EditorStyles.miniButtonLeft))
+                {
+                    _hiddenGroups = DefaultHiddenGroups();
+                    _listScroll = Vector2.zero;
+                    ClearHover();
+                }
+                if (GUILayout.Button("すべて表示", EditorStyles.miniButtonRight))
+                {
+                    _hiddenGroups.Clear();
+                    _listScroll = Vector2.zero;
+                    ClearHover();
+                }
+            }
+
+            _groupScroll = EditorGUILayout.BeginScrollView(_groupScroll, GUILayout.MaxHeight(110f));
+            foreach (var group in groups)
+            {
+                var isShown = !_hiddenGroups.Contains(group);
+                EditorGUI.BeginChangeCheck();
+                var now = EditorGUILayout.ToggleLeft($"{group}（{info.Meta.Counts[group]}）", isShown);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    if (now) _hiddenGroups.Remove(group);
+                    else if (!_hiddenGroups.Contains(group)) _hiddenGroups.Add(group);
+                    _listScroll = Vector2.zero;
+                    ClearHover();
+                }
+            }
+            EditorGUILayout.EndScrollView();
+        }
+
+        /// <summary>
+        /// 一覧に出すシェイプキーの番号を返す。
+        /// 検索語があるときは、見つかった順（名前の全体に一致 → 頭に一致 → 単語の頭に一致 → 途中に一致）に並べる。
+        /// 隠している分類だけに該当するときは、その分類も含めて探す。それでも無いときは、あいまい検索にする。
+        /// </summary>
+        private List<int> BuildVisibleList(RendererInfo info, out string note)
+        {
+            note = string.Empty;
+            if (_query == null || _queryText != _search)
+            {
+                _queryText = _search;
+                _query = yulEmoShapeQuery.Parse(_search);
+            }
+
+            var result = CollectShapes(info, false, false);
+            if (result.Count > 0 || _query.IsEmpty) return result;
+
+            result = CollectShapes(info, false, true);
+            if (result.Count > 0)
+            {
+                note = "　（隠している分類も含めて探しました）";
+                return result;
+            }
+
+            result = CollectShapes(info, true, true);
+            if (result.Count > 0) note = "　（一致するものが無いため、あいまい検索の結果です）";
+            return result;
+        }
+
+        private List<int> CollectShapes(RendererInfo info, bool fuzzy, bool includeHiddenGroups)
+        {
+            var found = new List<KeyValuePair<int, int>>();
+            for (var i = 0; i < info.Names.Length; i++)
+            {
+                if (info.Meta.IsSeparator[i]) continue;
+                if (!includeHiddenGroups && _hiddenGroups.Contains(info.Meta.Group[i])) continue;
+                if (_onlyEditing && FindEntry(info.Path, info.Names[i]) == null) continue;
+
+                var score = 0;
+                if (!_query.IsEmpty && !_query.Matches(info.Targets[i], fuzzy, out score)) continue;
+                found.Add(new KeyValuePair<int, int>(i, score));
+            }
+
+            if (!_query.IsEmpty)
+            {
+                found.Sort((x, y) => x.Value != y.Value ? x.Value.CompareTo(y.Value) : x.Key.CompareTo(y.Key));
+            }
+
+            var indices = new List<int>(found.Count);
+            foreach (var pair in found) indices.Add(pair.Key);
+            return indices;
         }
 
         private void DrawEntries()
@@ -437,6 +596,21 @@ namespace yulEmo
         {
             if (_entries.Count == 0) return;
 
+            // アバターに存在しないシェイプキー（名前の変更やメッシュの入れ替えで古くなったもの）は、書き出さない
+            var valid = new List<Entry>();
+            var skipped = new List<Entry>();
+            foreach (var entry in _entries)
+            {
+                var info = FindInfo(entry.Path);
+                if (info != null && info.NameToIndex.ContainsKey(entry.ShapeName)) valid.Add(entry);
+                else skipped.Add(entry);
+            }
+            if (valid.Count == 0)
+            {
+                EditorUtility.DisplayDialog("21Emo", "アバターに存在するシェイプキーがありません。アバターをリロードして、追加し直してください。", "OK");
+                return;
+            }
+
             var folder = (_outputFolder ?? string.Empty).Replace('\\', '/').TrimEnd('/');
             if (string.IsNullOrWhiteSpace(folder) || !(folder == "Assets" || folder.StartsWith("Assets/")))
             {
@@ -450,7 +624,7 @@ namespace yulEmo
             if (string.IsNullOrEmpty(name)) name = BuildDefaultName();
 
             var clip = new AnimationClip { name = name, frameRate = 60f };
-            foreach (var entry in _entries)
+            foreach (var entry in valid)
             {
                 var binding = EditorCurveBinding.FloatCurve(entry.Path, typeof(SkinnedMeshRenderer), "blendShape." + entry.ShapeName);
                 AnimationUtility.SetEditorCurve(clip, binding, new AnimationCurve(new Keyframe(0f, entry.Value)));
@@ -461,7 +635,14 @@ namespace yulEmo
             AssetDatabase.SaveAssets();
             EditorGUIUtility.PingObject(clip);
 
-            _status = $"書き出しました: {assetPath}（{_entries.Count} 個のシェイプキー）";
+            _status = $"書き出しました: {assetPath}（{valid.Count} 個のシェイプキー）";
+            if (skipped.Count > 0)
+            {
+                var names = new List<string>();
+                foreach (var entry in skipped) names.Add(entry.Path + " / " + entry.ShapeName);
+                _status += $"\nアバターに見つからないシェイプキーが {skipped.Count} 個あったため、書き出しから除外しました。";
+                Debug.LogWarning("[21Emo] 書き出しから除外したシェイプキー: " + string.Join(", ", names));
+            }
             Debug.Log("[21Emo] " + _status);
             Repaint();
         }
@@ -500,7 +681,7 @@ namespace yulEmo
         private void Rebuild()
         {
             _rebuildQueued = false;
-            RestoreWeights();
+            _state.Weights = new Dictionary<Renderer, KeyValuePair<string, float>[]>();
             _infos.Clear();
             _movedCache.Clear();
             _avatarRoot = null;
@@ -528,6 +709,14 @@ namespace yulEmo
 
             _avatarRoot = descriptor.gameObject;
             CollectRenderers(descriptor);
+            _infosVersion++;
+
+            // アバターが変わったときだけ、すでに設定されている値を編集リストに取り込む（消したエントリーを復活させない）
+            if (_seededAvatar != _avatarRoot)
+            {
+                SeedEntriesFromAvatar();
+                _seededAvatar = _avatarRoot;
+            }
 
             // 視点の初期位置: アバターの目の位置を、アバターの正面から見る
             _initialTarget = descriptor.transform.TransformPoint(descriptor.ViewPosition);
@@ -560,6 +749,14 @@ namespace yulEmo
                     info.Names[i] = mesh.GetBlendShapeName(i);
                     info.NameToIndex[info.Names[i]] = i;
                 }
+
+                // 分類（区切り・VRChat 標準・MMD）と、検索用の情報
+                info.Meta = yulEmoShapeClassifier.Classify(info.Names);
+                info.Targets = new yulEmoShapeTarget[info.Names.Length];
+                for (var i = 0; i < info.Names.Length; i++)
+                {
+                    info.Targets[i] = yulEmoShapeTarget.Create(info.Names[i], info.Meta.Group[i]);
+                }
                 _infos.Add(info);
             }
 
@@ -580,6 +777,24 @@ namespace yulEmo
             }
         }
 
+        /// <summary>
+        /// アバターのレンダラーにすでに設定されているシェイプキーの値を、編集リストに取り込む。
+        /// 取り込むのは値を読むだけで、アバターは変えない。すでにリストにあるシェイプキーは、リストの値を優先する。
+        /// </summary>
+        private void SeedEntriesFromAvatar()
+        {
+            foreach (var info in _infos)
+            {
+                for (var i = 0; i < info.Names.Length; i++)
+                {
+                    var weight = info.Renderer.GetBlendShapeWeight(i);
+                    if (weight <= SeedMinWeight) continue;
+                    if (FindEntry(info.Path, info.Names[i]) != null) continue;
+                    _entries.Add(new Entry { Path = info.Path, ShapeName = info.Names[i], Value = weight });
+                }
+            }
+        }
+
         private RendererInfo FindInfo(string path)
         {
             foreach (var info in _infos)
@@ -590,9 +805,8 @@ namespace yulEmo
         }
 
         // ─────────────────────────────────────────────────────────────
-        // プレビュー（本物のアバターのシェイプキーの値を、一時的に変える）
-        // AnimationMode でクリップを再生する方式は、アバターの姿勢や位置が変わってしまうため使わない。
-        // シェイプキーの値だけを直接変え、元の値を覚えておいて戻す。
+        // プレビューに反映する値
+        // 本物のアバターは変えず、値は yulEmoFacePreviewFilter（NDMF Preview のフィルター）を通して、プレビュー用のコピーにだけ設定する。
         // ─────────────────────────────────────────────────────────────
         private void OnEditorUpdate()
         {
@@ -613,45 +827,32 @@ namespace yulEmo
             _dirty = false;
             _lastApply = EditorApplication.timeSinceStartup;
 
-            if (_avatarRoot == null)
+            // プレビューに反映する値: 編集リスト + 乗せているシェイプキー（100）
+            var perRenderer = new Dictionary<Renderer, List<KeyValuePair<string, float>>>();
+            void Add(RendererInfo info, string shapeName, float value)
             {
-                RestoreWeights();
-                return;
+                if (!perRenderer.TryGetValue(info.Renderer, out var list))
+                {
+                    list = new List<KeyValuePair<string, float>>();
+                    perRenderer[info.Renderer] = list;
+                }
+                list.Add(new KeyValuePair<string, float>(shapeName, value));
             }
 
-            // 今回の値にするシェイプキー: 編集リスト + 乗せているシェイプキー（100）
-            var targets = new Dictionary<(SkinnedMeshRenderer, int), float>();
             foreach (var entry in _entries)
             {
                 var info = FindInfo(entry.Path);
-                if (info == null || !info.NameToIndex.TryGetValue(entry.ShapeName, out var index)) continue;
-                targets[(info.Renderer, index)] = entry.Value;
+                if (info == null || !info.NameToIndex.ContainsKey(entry.ShapeName)) continue;
+                Add(info, entry.ShapeName, entry.Value);
             }
             if (TryGetHover(out var hoverInfo, out var hoverName) && FindEntry(hoverInfo.Path, hoverName) == null)
             {
-                targets[(hoverInfo.Renderer, _hoverShape)] = 100f;
+                Add(hoverInfo, hoverName, 100f);
             }
 
-            // 対象から外れたシェイプキーは、元の値に戻す
-            var released = new List<(SkinnedMeshRenderer, int)>();
-            foreach (var key in _touched.Keys)
-            {
-                if (!targets.ContainsKey(key)) released.Add(key);
-            }
-            foreach (var key in released)
-            {
-                if (key.Item1 != null) key.Item1.SetBlendShapeWeight(key.Item2, _touched[key]);
-                _touched.Remove(key);
-            }
-
-            // 値を設定する（初めて触るときは、元の値を覚える）
-            foreach (var pair in targets)
-            {
-                var renderer = pair.Key.Item1;
-                if (renderer == null) continue;
-                if (!_touched.ContainsKey(pair.Key)) _touched[pair.Key] = renderer.GetBlendShapeWeight(pair.Key.Item2);
-                renderer.SetBlendShapeWeight(pair.Key.Item2, pair.Value);
-            }
+            var weights = new Dictionary<Renderer, KeyValuePair<string, float>[]>();
+            foreach (var pair in perRenderer) weights[pair.Key] = pair.Value.ToArray();
+            _state.Weights = weights;
 
             RefreshOverlay();
             Repaint();
@@ -669,37 +870,6 @@ namespace yulEmo
             return true;
         }
 
-        /// <summary>変えたシェイプキーを、すべて元の値に戻す。</summary>
-        private void RestoreWeights()
-        {
-            if (_touched.Count == 0) return;
-
-            foreach (var pair in _touched)
-            {
-                if (pair.Key.Item1 != null) pair.Key.Item1.SetBlendShapeWeight(pair.Key.Item2, pair.Value);
-            }
-            _touched.Clear();
-            _boxes.Clear();
-            _dim = false;
-            Repaint();
-        }
-
-        private void OnPlayModeStateChanged(PlayModeStateChange state)
-        {
-            if (state == PlayModeStateChange.ExitingEditMode) RestoreWeights();
-        }
-
-        // シーンの保存に、プレビュー用の値が入らないようにする
-        private void OnSceneSaving(UnityEngine.SceneManagement.Scene scene, string path)
-        {
-            RestoreWeights();
-        }
-
-        private void OnSceneSaved(UnityEngine.SceneManagement.Scene scene)
-        {
-            _dirty = true;
-        }
-
         // ─────────────────────────────────────────────────────────────
         // プレビューの表示・カメラ
         // ─────────────────────────────────────────────────────────────
@@ -712,6 +882,16 @@ namespace yulEmo
 
         private void DrawPreview(Event e)
         {
+            // Layout と Repaint で表示が食い違わないように、判定は Layout のときだけ行う
+            if (e.type == EventType.Layout)
+            {
+                _ndmfOffNote = yulEmoPreferences.UseNdmfPreview && PreviewSession.Current == null;
+            }
+            if (_ndmfOffNote)
+            {
+                EditorGUILayout.HelpBox("NDMF のメニューで NDMF Preview が無効になっているため、Modular Avatar などの処理は反映されません。", MessageType.Info);
+            }
+
             var rect = GUILayoutUtility.GetAspectRect(1f);
             if (rect.width < 16f) rect = new Rect(rect.x, rect.y, 16f, 16f);
 
@@ -722,8 +902,16 @@ namespace yulEmo
             EditorGUI.DrawRect(rect, PreviewBackground);
             if (_avatarRoot == null) return;
 
+            // NDMF Preview は、再生中とプレハブの編集画面では動かない。その間は、表情をプレビューに反映できない。
+            if (EditorApplication.isPlayingOrWillChangePlaymode || PrefabStageUtility.GetCurrentPrefabStage() != null)
+            {
+                var style = new GUIStyle(EditorStyles.wordWrappedLabel) { alignment = TextAnchor.MiddleCenter };
+                GUI.Label(rect, "再生中とプレハブの編集画面では、NDMF Preview が動かないため、\nプレビューに表情を反映できません。", style);
+                return;
+            }
+
             if (!EnsureCamera()) return;
-            ApplyNdmfPreviewSetting();
+            EnsureSession();
             RenderPreview();
 
             GUI.DrawTexture(rect, _renderTexture, ScaleMode.StretchToFill, false);
@@ -778,7 +966,6 @@ namespace yulEmo
                 _cam.allowHDR = false;
                 _cam.fieldOfView = PreviewFov;
                 _cam.aspect = 1f;
-                _appliedUseNdmfPreview = null;
             }
 
             if (_renderTexture == null)
@@ -806,24 +993,41 @@ namespace yulEmo
             _cam.targetTexture = null;
         }
 
-        /// <summary>NDMF Preview のオンオフを、このカメラにだけ反映する。</summary>
-        private void ApplyNdmfPreviewSetting()
+        /// <summary>
+        /// このカメラ専用の NDMF Preview のセッションを用意する。
+        /// 「NDMF Preview を使う」がオンで、NDMF 全体のプレビューが有効なときは、それを引き継いで、表情のフィルターを最後に足す。
+        /// そうでないときは、空のセッションに表情のフィルターだけを足す（NDMF の処理は反映されない）。
+        /// </summary>
+        private void EnsureSession()
         {
             var use = yulEmoPreferences.UseNdmfPreview;
-            if (_appliedUseNdmfPreview == use) return;
-            _appliedUseNdmfPreview = use;
+            var parent = use ? PreviewSession.Current : null;
 
-            if (use)
+            if (_session != null && _sessionUseNdmf == use && _sessionParent == parent && _sessionInfosVersion == _infosVersion) return;
+
+            DisposeSession();
+
+            _session = parent != null ? parent.Fork("21Emo Face Editor") : new PreviewSession();
+            var renderers = new List<SkinnedMeshRenderer>();
+            foreach (var info in _infos) renderers.Add(info.Renderer);
+            _session.AddMutator(new SequencePoint(), new yulEmoFacePreviewFilter(renderers, _state));
+            _session.OverrideCamera(_cam);
+
+            _sessionUseNdmf = use;
+            _sessionParent = parent;
+            _sessionInfosVersion = _infosVersion;
+        }
+
+        private void DisposeSession()
+        {
+            if (_cam != null) PreviewSession.ClearCameraOverride(_cam);
+            if (_session != null)
             {
-                // 割り当てを外すと、NDMF 全体のプレビュー（NDMF のメニューでオンのとき）が効く
-                PreviewSession.ClearCameraOverride(_cam);
+                _session.Dispose();
+                _session = null;
             }
-            else
-            {
-                // フィルターを持たない空のプレビューを割り当てて、差し替えを止める
-                if (_emptySession == null) _emptySession = new PreviewSession();
-                _emptySession.OverrideCamera(_cam);
-            }
+            _sessionParent = null;
+            _sessionInfosVersion = -1;
         }
 
         private void DrawBoxes(Rect previewRect)
@@ -870,13 +1074,7 @@ namespace yulEmo
 
         private void TeardownCamera()
         {
-            if (_cam != null) PreviewSession.ClearCameraOverride(_cam);
-            if (_emptySession != null)
-            {
-                _emptySession.Dispose();
-                _emptySession = null;
-            }
-            _appliedUseNdmfPreview = null;
+            DisposeSession();
 
             if (_renderTexture != null)
             {
