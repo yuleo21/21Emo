@@ -8,7 +8,7 @@ namespace yulEmo
     /// メッシュのシェイプキーを、分類に振り分ける。
     ///
     /// 分類の決め方（上にあるものを優先）:
-    ///   1. 名前が "vrc." で始まるもの → 「VRChat 標準」
+    ///   1. 名前が "vrc." で始まるもの → 「VRChat」
     ///   2. MMD の区切り（名前に MMD を含む区切り）の直後から続く、MMD らしい名前のもの → 「MMD」
     ///      （MMD らしい名前とは、MMD の標準の表情名、または半角の英数字を含まない名前）。
     ///      半角の英数字を含む名前が出たら MMD の並びは終わりとし、以降は「（MMD の後ろ）」にする。衣装や体のシェイプキーが、MMD として隠れないようにするため。
@@ -21,7 +21,7 @@ namespace yulEmo
     /// </summary>
     internal static class yulEmoShapeClassifier
     {
-        public const string VrchatGroup = "VRChat 標準";
+        public const string VrchatGroup = "VRChat";
         public const string MmdGroup = "MMD";
         public const string NoGroup = "（区切りなし）";
         public const string AfterMmdGroup = "（MMD の後ろ）";

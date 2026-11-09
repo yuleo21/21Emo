@@ -62,10 +62,10 @@ namespace yulEmo
         [SerializeField] private string _fileName = string.Empty;
         [SerializeField] private bool _showSelectedBoxes;
         [SerializeField] private string _search = string.Empty;
-        // 一覧に出さない分類。VRChat 標準と MMD は、標準で隠す
+        // 一覧に出さない分類。VRChat と MMD は、標準で隠す
         [SerializeField] private List<string> _hiddenGroups = DefaultHiddenGroups();
         [SerializeField] private bool _onlyEditing;
-        [SerializeField] private bool _showGroupFilter;
+        [SerializeField] private bool _showEntries = true;
         [SerializeField] private List<Entry> _entries = new List<Entry>();
         // 編集リストに、アバターにすでに設定されている値を取り込み済みのアバター（アバターごとに 1 回だけ取り込む）
         [SerializeField] private GameObject _seededAvatar;
@@ -77,7 +77,6 @@ namespace yulEmo
         private string _status;
         private GUIStyle _rowStyle;
         private GUIStyle _groupLabelStyle;
-        private Vector2 _groupScroll;
         private string _queryText;
         private yulEmoShapeQuery _query;
 
@@ -356,61 +355,56 @@ namespace yulEmo
             GUI.EndScrollView();
         }
 
-        /// <summary>「編集中のみ」の切り替えと、分類ごとの表示・非表示。</summary>
+        /// <summary>
+        /// 「編集中のみ」の切り替えと、分類の表示・非表示を選ぶドロップダウン。
+        /// 分類の選択は MaskField（Camera の Culling Mask と同じ形式）で、開いたまま複数を切り替えられる。
+        /// MaskField は 32 個までしか扱えないため、分類がそれより多いときは、33 個目以降を表示したままにする。
+        /// </summary>
         private void DrawFilterOptions(RendererInfo info)
         {
             var groups = info.Meta.GroupOrder;
-            var shown = 0;
-            foreach (var group in groups)
-            {
-                if (!_hiddenGroups.Contains(group)) shown++;
-            }
 
             using (new EditorGUILayout.HorizontalScope())
             {
                 EditorGUI.BeginChangeCheck();
                 _onlyEditing = GUILayout.Toggle(_onlyEditing, "編集中のみ", EditorStyles.miniButton, GUILayout.Width(80f));
-                _showGroupFilter = GUILayout.Toggle(_showGroupFilter, $"分類で絞り込み（{shown}/{groups.Count}）", EditorStyles.miniButton);
                 if (EditorGUI.EndChangeCheck())
                 {
                     _listScroll = Vector2.zero;
                     ClearHover();
                 }
-            }
 
-            if (!_showGroupFilter) return;
+                if (groups.Count == 0) return;
 
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (GUILayout.Button("標準に戻す", EditorStyles.miniButtonLeft))
+                // 表示中の分類のビットを立てる
+                var mask = 0;
+                var maskCount = Mathf.Min(groups.Count, 32);
+                for (var i = 0; i < maskCount; i++)
                 {
-                    _hiddenGroups = DefaultHiddenGroups();
-                    _listScroll = Vector2.zero;
-                    ClearHover();
+                    if (!_hiddenGroups.Contains(groups[i])) mask |= 1 << i;
                 }
-                if (GUILayout.Button("すべて表示", EditorStyles.miniButtonRight))
-                {
-                    _hiddenGroups.Clear();
-                    _listScroll = Vector2.zero;
-                    ClearHover();
-                }
-            }
 
-            _groupScroll = EditorGUILayout.BeginScrollView(_groupScroll, GUILayout.MaxHeight(110f));
-            foreach (var group in groups)
-            {
-                var isShown = !_hiddenGroups.Contains(group);
                 EditorGUI.BeginChangeCheck();
-                var now = EditorGUILayout.ToggleLeft($"{group}（{info.Meta.Counts[group]}）", isShown);
+                var newMask = EditorGUILayout.MaskField(mask, groups.ToArray());
                 if (EditorGUI.EndChangeCheck())
                 {
-                    if (now) _hiddenGroups.Remove(group);
-                    else if (!_hiddenGroups.Contains(group)) _hiddenGroups.Add(group);
+                    ApplyGroupMask(info, newMask);
                     _listScroll = Vector2.zero;
                     ClearHover();
                 }
             }
-            EditorGUILayout.EndScrollView();
+        }
+
+        /// <summary>MaskField の結果を、隠す分類の一覧に反映する（「すべて表示」は -1 で返る）。</summary>
+        private void ApplyGroupMask(RendererInfo info, int mask)
+        {
+            var groups = info.Meta.GroupOrder;
+            var maskCount = Mathf.Min(groups.Count, 32);
+            _hiddenGroups.Clear();
+            for (var i = 0; i < maskCount; i++)
+            {
+                if ((mask & (1 << i)) == 0) _hiddenGroups.Add(groups[i]);
+            }
         }
 
         /// <summary>
@@ -469,7 +463,10 @@ namespace yulEmo
         private void DrawEntries()
         {
             EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("編集中のシェイプキー", EditorStyles.boldLabel);
+            _showEntries = EditorGUILayout.Foldout(
+                _showEntries, $"編集中のシェイプキー（{_entries.Count}）", true, EditorStyles.foldoutHeader);
+
+            if (!_showEntries) return;
 
             if (_entries.Count == 0)
             {
@@ -750,7 +747,7 @@ namespace yulEmo
                     info.NameToIndex[info.Names[i]] = i;
                 }
 
-                // 分類（区切り・VRChat 標準・MMD）と、検索用の情報
+                // 分類（区切り・VRChat・MMD）と、検索用の情報
                 info.Meta = yulEmoShapeClassifier.Classify(info.Names);
                 info.Targets = new yulEmoShapeTarget[info.Names.Length];
                 for (var i = 0; i < info.Names.Length; i++)
