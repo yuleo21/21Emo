@@ -222,7 +222,7 @@ namespace yulEmo
             {
                 string message = null;
                 _viewPosition = descriptor.ViewPosition;
-                _clone = yulEmoIconCapturer.CreateClone(descriptor.gameObject, _applyNDMF, null, ref message);
+                _clone = yulEmoAvatarCloneBuilder.CreateClone(descriptor.gameObject, _applyNDMF, null, ref message);
 
                 // 表情は変えず、アニメーションも再生しない
                 foreach (var animator in _clone.GetComponentsInChildren<Animator>(true))

@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace yulEmo
 {
@@ -87,15 +88,15 @@ namespace yulEmo
     /// シェイプキーの検索式。
     ///
     ///   スペース   : すべての語を含むものだけを残す
-    ///   a|b        : どちらかを含む
     ///   -語 / !語  : その語を含むものを除く
     ///   @語        : 名前ではなく、分類の名前に含まれるものを探す
-    ///   "a b"      : 空白を含む語
     ///
-    /// 全角・半角、大文字・小文字、カタカナ・ひらがなの違いは区別しない。
-    /// 「目」と eye のような、日本語と英語の対応語も探す（SynonymGroups）。
+    /// 各語は正規表現として探す（| による選択、^ や $、. なども使える）。
+    /// 空白を含む語は、\s や [ ] のように書く。
+    /// 全角・半角、大文字・小文字、カタカナ・ひらがなの違いは区別しない（語の側も、名前と同じそろえ方をしてから正規表現にする）。
+    /// 「目」と eye のような、日本語と英語の対応語も探す（対応表ファイル yulEmoShapeSynonyms.json）。対応語が付くのは、語がそのまま対応表にあるときだけ。
+    /// 正規表現として読めない語は、文字どおりの語として探し、HasInvalidPattern を立てる。
     /// 結果は、名前の全体に一致 → 頭に一致 → 単語の頭に一致 → 途中に一致、の順に並べる。
-    /// あいまい検索（語の文字が順に出てくれば一致）は、通常の検索で 1 つも見つからないときだけ使う。
     /// </summary>
     internal sealed class yulEmoShapeQuery
     {
@@ -103,38 +104,36 @@ namespace yulEmo
         {
             public bool Negative;
             public bool OnGroup;
-            public readonly List<string> Alternatives = new List<string>();
+            public readonly List<Regex> Patterns = new List<Regex>();
         }
 
-        /// <summary>同じ意味の語の組。入力した語が組のどれかと一致したら、組のすべてを探す。</summary>
-        private static readonly string[][] SynonymGroups =
-        {
-            new[] { "eye", "eyes", "目", "眼", "瞳", "ひとみ" },
-            new[] { "brow", "eyebrow", "眉", "まゆ" },
-            new[] { "mouth", "口", "くち", "lip", "lips", "唇", "くちびる" },
-            new[] { "smile", "笑", "笑顔", "えがお", "にこ" },
-            new[] { "angry", "anger", "怒", "おこ" },
-            new[] { "sad", "sorrow", "悲", "泣", "かなし" },
-            new[] { "surprise", "surprised", "びっくり", "驚" },
-            new[] { "cheek", "頬", "ほほ", "ほお" },
-            new[] { "tongue", "舌", "べろ", "ぺろ" },
-            new[] { "blink", "まばたき", "瞬き", "瞬" },
-            new[] { "wink", "ウィンク" },
-            new[] { "left", "左", "ひだり" },
-            new[] { "right", "右", "みぎ" },
-            new[] { "up", "上", "うえ" },
-            new[] { "down", "下" },
-            new[] { "open", "開" },
-            new[] { "close", "closed", "閉", "とじ" },
-            new[] { "happy", "joy", "喜", "うれしい" },
-            new[] { "shy", "blush", "照", "赤面", "てれ" },
-        };
+        /// <summary>マッチングにかけられる上限の時間。これを超える正規表現は、一致しなかったものとして扱う。</summary>
+        private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(50);
 
-        private static readonly Dictionary<string, string[]> Synonyms = BuildSynonyms();
+        private static Dictionary<string, string[]> _synonyms;
+        private static string[][] _synonymSource;
+
+        /// <summary>対応表（外部ファイル）から作った、語から対応語の組への対応。ファイルが読み直されたら、作り直す。</summary>
+        private static Dictionary<string, string[]> Synonyms
+        {
+            get
+            {
+                var groups = yulEmoShapeSynonyms.Groups;
+                if (_synonyms == null || !ReferenceEquals(groups, _synonymSource))
+                {
+                    _synonymSource = groups;
+                    _synonyms = BuildSynonyms(groups);
+                }
+                return _synonyms;
+            }
+        }
 
         private readonly List<Term> _terms = new List<Term>();
 
         public bool IsEmpty => _terms.Count == 0;
+
+        /// <summary>正規表現として読めず、文字どおりに探した語があるか。</summary>
+        public bool HasInvalidPattern { get; private set; }
 
         public static yulEmoShapeQuery Parse(string raw)
         {
@@ -154,13 +153,22 @@ namespace yulEmo
                     body = body.Substring(1);
                 }
 
-                foreach (var alternative in body.Split('|'))
+                if (body.Length == 0) continue;
+
+                var folded = FoldPattern(body);
+                term.Patterns.Add(query.Compile(folded, body));
+
+                // 対応語は、語がそのまま対応表にあるときだけ足す（対応語の側は、文字どおりに探す）
+                if (Synonyms.TryGetValue(NormalizeSmallKana(folded), out var synonyms))
                 {
-                    var folded = yulEmoShapeText.Fold(alternative.Trim());
-                    if (folded.Length > 0) AddWithSynonyms(term.Alternatives, folded);
+                    foreach (var synonym in synonyms)
+                    {
+                        if (synonym == folded) continue;
+                        term.Patterns.Add(new Regex(Regex.Escape(synonym), RegexOptions.None, MatchTimeout));
+                    }
                 }
 
-                if (term.Alternatives.Count > 0) query._terms.Add(term);
+                query._terms.Add(term);
             }
 
             return query;
@@ -168,19 +176,18 @@ namespace yulEmo
 
         /// <summary>
         /// 検索式に一致するか。一致したら、並べ替えに使う点数（小さいほど良い）を score に入れる。
-        /// fuzzy が true のときは、あいまい一致も認める（除外の語には使わない）。
         /// </summary>
-        public bool Matches(yulEmoShapeTarget target, bool fuzzy, out int score)
+        public bool Matches(yulEmoShapeTarget target, out int score)
         {
             score = 0;
             foreach (var term in _terms)
             {
                 var best = -1;
-                foreach (var alternative in term.Alternatives)
+                foreach (var pattern in term.Patterns)
                 {
                     var s = term.OnGroup
-                        ? ScoreGroup(target, alternative)
-                        : ScoreName(target, alternative, fuzzy && !term.Negative);
+                        ? ScoreGroup(target, pattern)
+                        : ScoreName(target, pattern);
                     if (s >= 0 && (best < 0 || s < best)) best = s;
                 }
 
@@ -197,50 +204,104 @@ namespace yulEmo
             return true;
         }
 
-        private static int ScoreName(yulEmoShapeTarget target, string text, bool fuzzy)
+        private static int ScoreName(yulEmoShapeTarget target, Regex pattern)
         {
-            var index = target.Folded.IndexOf(text, StringComparison.Ordinal);
-            if (index >= 0)
+            Match match;
+            try
             {
-                if (target.Folded.Length == text.Length) return 0;
-                if (index == 0) return 1;
-                return target.Boundary[index] ? 2 : 3;
+                match = pattern.Match(target.Folded);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return -1;
             }
 
-            if (fuzzy && text.Length >= 2 && IsSubsequence(text, target.Folded)) return 6;
-            return -1;
+            if (!match.Success) return -1;
+            if (match.Index == 0 && match.Length == target.Folded.Length) return 0;
+            if (match.Index == 0) return 1;
+            if (match.Index < target.Boundary.Length && target.Boundary[match.Index]) return 2;
+            return 3;
         }
 
-        private static int ScoreGroup(yulEmoShapeTarget target, string text)
+        private static int ScoreGroup(yulEmoShapeTarget target, Regex pattern)
         {
-            return target.GroupFolded.IndexOf(text, StringComparison.Ordinal) >= 0 ? 2 : -1;
-        }
-
-        private static bool IsSubsequence(string needle, string haystack)
-        {
-            var position = 0;
-            foreach (var c in haystack)
+            try
             {
-                if (c == needle[position] && ++position == needle.Length) return true;
+                return pattern.IsMatch(target.GroupFolded) ? 2 : -1;
             }
-            return false;
+            catch (RegexMatchTimeoutException)
+            {
+                return -1;
+            }
+        }
+
+        /// <summary>正規表現を作る。読めない語は、文字どおりに探す正規表現にして、印を立てる。</summary>
+        private Regex Compile(string pattern, string originalBody)
+        {
+            try
+            {
+                return new Regex(pattern, RegexOptions.None, MatchTimeout);
+            }
+            catch (ArgumentException)
+            {
+                HasInvalidPattern = true;
+                return new Regex(
+                    Regex.Escape(yulEmoShapeText.Fold(originalBody)), RegexOptions.None, MatchTimeout);
+            }
+        }
+
+        /// <summary>
+        /// 語を、名前と同じそろえ方（大文字・小文字、カタカナ・ひらがな）にしてから、正規表現として使える形にする。
+        /// エスケープの中身（\d、\B など）と、(?i) や (?&lt;名前&gt; の先頭の記号は、そろえると意味が変わるので、そのまま写す。
+        /// </summary>
+        private static string FoldPattern(string body)
+        {
+            var result = new StringBuilder(body.Length);
+            var i = 0;
+            while (i < body.Length)
+            {
+                var c = body[i];
+
+                if (c == '\\' && i + 1 < body.Length)
+                {
+                    result.Append(c);
+                    result.Append(body[i + 1]);
+                    i += 2;
+
+                    // \p{Lu} のような、Unicode の分類の名前も、そのまま写す
+                    if (body[i - 1] == 'p' && i < body.Length && body[i] == '{')
+                    {
+                        var end = body.IndexOf('}', i);
+                        if (end < 0) end = body.Length - 1;
+                        result.Append(body, i, end - i + 1);
+                        i = end + 1;
+                    }
+                    continue;
+                }
+
+                if (c == '(' && i + 2 < body.Length && body[i + 1] == '?')
+                {
+                    result.Append(c);
+                    result.Append(body[i + 1]);
+                    result.Append(body[i + 2]);
+                    i += 3;
+                    continue;
+                }
+
+                result.Append(yulEmoShapeText.FoldChar(c));
+                i++;
+            }
+            return result.ToString();
         }
 
         private static List<string> Tokenize(string text)
         {
             var tokens = new List<string>();
             var current = new StringBuilder();
-            var inQuote = false;
 
             foreach (var c in text)
             {
-                if (c == '"' || c == '\u201C' || c == '\u201D')
-                {
-                    inQuote = !inQuote;
-                    continue;
-                }
-
-                if (char.IsWhiteSpace(c) && !inQuote)
+                if (char.IsWhiteSpace(c))
                 {
                     if (current.Length > 0) tokens.Add(current.ToString());
                     current.Length = 0;
@@ -253,25 +314,48 @@ namespace yulEmo
             return tokens;
         }
 
-        private static void AddWithSynonyms(List<string> list, string folded)
+        /// <summary>小さいかな（ぁ、ぃ、っ、ゎ など）を、大きいかなにする。ういんくと、うぃんくのような書き方の違いを吸収するため。</summary>
+        private static string NormalizeSmallKana(string text)
         {
-            if (!list.Contains(folded)) list.Add(folded);
-
-            if (!Synonyms.TryGetValue(folded, out var set)) return;
-            foreach (var synonym in set)
+            var chars = text.ToCharArray();
+            for (var i = 0; i < chars.Length; i++)
             {
-                if (!list.Contains(synonym)) list.Add(synonym);
+                switch (chars[i])
+                {
+                    case 'ぁ': chars[i] = 'あ'; break;
+                    case 'ぃ': chars[i] = 'い'; break;
+                    case 'ぅ': chars[i] = 'う'; break;
+                    case 'ぇ': chars[i] = 'え'; break;
+                    case 'ぉ': chars[i] = 'お'; break;
+                    case 'っ': chars[i] = 'つ'; break;
+                    case 'ゃ': chars[i] = 'や'; break;
+                    case 'ゅ': chars[i] = 'ゆ'; break;
+                    case 'ょ': chars[i] = 'よ'; break;
+                    case 'ゎ': chars[i] = 'わ'; break;
+                    case 'ゕ': chars[i] = 'か'; break;
+                    case 'ゖ': chars[i] = 'け'; break;
+                }
             }
+            return new string(chars);
         }
 
-        private static Dictionary<string, string[]> BuildSynonyms()
+        private static Dictionary<string, string[]> BuildSynonyms(string[][] groups)
         {
             var dictionary = new Dictionary<string, string[]>();
-            foreach (var group in SynonymGroups)
+            foreach (var group in groups)
             {
-                var folded = new string[group.Length];
-                for (var i = 0; i < group.Length; i++) folded[i] = yulEmoShapeText.Fold(group[i]);
-                foreach (var term in folded) dictionary[term] = folded;
+                // 対応語の組には、そろえた形と、小さいかなを大きくした形の両方を入れる（名前の書き方がどちらでも当てるため）
+                var values = new List<string>();
+                foreach (var entry in group)
+                {
+                    var folded = yulEmoShapeText.Fold(entry);
+                    if (!values.Contains(folded)) values.Add(folded);
+                    var loose = NormalizeSmallKana(folded);
+                    if (!values.Contains(loose)) values.Add(loose);
+                }
+
+                var array = values.ToArray();
+                foreach (var value in values) dictionary[NormalizeSmallKana(value)] = array;
             }
             return dictionary;
         }
