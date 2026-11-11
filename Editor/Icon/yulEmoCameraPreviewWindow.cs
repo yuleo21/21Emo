@@ -69,6 +69,11 @@ namespace yulEmo
 
         private void OnDisable()
         {
+            // 閉じた後に保留中の Rebuild が走らないよう、登録した delayCall はここで外す
+            // 閉じた後にプレビュー用のシーンや複製が作られると、解放する側がもういないため
+            EditorApplication.delayCall -= Rebuild;
+            _rebuildQueued = false;
+
             Teardown();
         }
 
@@ -206,11 +211,7 @@ namespace yulEmo
                 return;
             }
 
-            var descriptor = _avatar.GetComponentInParent<VRCAvatarDescriptor>();
-            if (descriptor == null)
-            {
-                descriptor = _avatar.GetComponentInChildren<VRCAvatarDescriptor>();
-            }
+            var descriptor = yulEmoEditorUtility.FindDescriptor(_avatar);
             if (descriptor == null)
             {
                 _status = "VRCAvatarDescriptor が見つかりません。";

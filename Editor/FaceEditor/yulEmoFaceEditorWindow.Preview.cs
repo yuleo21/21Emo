@@ -99,9 +99,11 @@ namespace yulEmo
             {
                 var info = FindInfo(entry.Path);
                 if (info == null || !info.NameToIndex.ContainsKey(entry.ShapeName)) continue;
+                // シーン側で消された Renderer は、再調査するまで触らない（MissingReferenceException になるため）
+                if (info.Renderer == null) continue;
                 Add(info, entry.ShapeName, entry.Value);
             }
-            if (TryGetHover(out var hoverInfo, out var hoverName) && FindEntry(hoverInfo.Path, hoverName) == null)
+            if (TryGetHover(out var hoverInfo, out var hoverName) && hoverInfo.Renderer != null && FindEntry(hoverInfo.Path, hoverName) == null)
             {
                 Add(hoverInfo, hoverName, 100f);
             }

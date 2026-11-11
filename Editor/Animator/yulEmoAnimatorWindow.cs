@@ -19,62 +19,68 @@ namespace yulEmo
         private const int FaceFixSlotCount = 8;
         private const int GestureCount = 7;
 
+        // ウィンドウの入力状態は SerializeField で保持する
+        // ドメインリロード（再コンパイルやインポート）で編集中の内容が飛ばないようにするため
+        // readonly のフィールドは Unity がシリアライズしないので、保持したいものには付けない
+
         // アバター読み込み用
-        private GameObject _avatarObject;
+        [SerializeField] private GameObject _avatarObject;
         private GameObject _lastLoadedAvatar;
 
         // 手のモード & WD設定
-        private yulEmoGenerator.HandMode _handMode = yulEmoGenerator.HandMode.Both;
-        private bool _writeDefaults = true;
+        [SerializeField] private yulEmoGenerator.HandMode _handMode = yulEmoGenerator.HandMode.Both;
+        [SerializeField] private bool _writeDefaults = true;
 
         // Idle（待機用）
-        private AnimationClip _idleClip;
+        [SerializeField] private AnimationClip _idleClip;
 
         // Both モード用: 左手・右手それぞれのクリップ
-        private readonly AnimationClip[] _clipsLeft  = new AnimationClip[GestureCount];
-        private readonly AnimationClip[] _clipsRight = new AnimationClip[GestureCount];
+        [SerializeField] private AnimationClip[] _clipsLeft  = new AnimationClip[GestureCount];
+        [SerializeField] private AnimationClip[] _clipsRight = new AnimationClip[GestureCount];
 
         // Either モード用: 左右共通クリップ
-        private readonly AnimationClip[] _clipsEither = new AnimationClip[GestureCount];
+        [SerializeField] private AnimationClip[] _clipsEither = new AnimationClip[GestureCount];
 
-        private bool _useGestureWeight;
+        [SerializeField] private bool _useGestureWeight;
 
         // ジェスチャー表情のプリセット（基本の表情とは別に、FacePreset で切り替える表情セット）
+        [Serializable]
         private sealed class PresetEntry
         {
             public string Name = "";
             public bool Foldout = true;
-            public readonly AnimationClip[] Left   = new AnimationClip[GestureCount];
-            public readonly AnimationClip[] Right  = new AnimationClip[GestureCount];
-            public readonly AnimationClip[] Either = new AnimationClip[GestureCount];
+            public AnimationClip[] Left   = new AnimationClip[GestureCount];
+            public AnimationClip[] Right  = new AnimationClip[GestureCount];
+            public AnimationClip[] Either = new AnimationClip[GestureCount];
         }
 
-        private readonly List<PresetEntry> _presets = new List<PresetEntry>();
+        [SerializeField] private List<PresetEntry> _presets = new List<PresetEntry>();
 
         // ジェスチャ表情メニュー（Idle 以外の各ジェスチャの表情を、FaceFix パラメータで固定するメニュー）
-        private bool _useGestureFaceMenu;
+        [SerializeField] private bool _useGestureFaceMenu;
 
-        private bool _useFaceFix;
-        private readonly AnimationClip[] _faceFixClips = new AnimationClip[FaceFixSlotCount];
+        [SerializeField] private bool _useFaceFix;
+        [SerializeField] private AnimationClip[] _faceFixClips = new AnimationClip[FaceFixSlotCount];
         // FaceFix のメニュー表示名（既定は番号）
-        private readonly string[] _faceFixNames = { "1", "2", "3", "4", "5", "6", "7", "8" };
+        [SerializeField] private string[] _faceFixNames = { "1", "2", "3", "4", "5", "6", "7", "8" };
 
-        private string _outputFolder = "Assets/21Emo/Generated";
+        [SerializeField] private string _outputFolder = "Assets/21Emo/Generated";
         // 空欄のときは「アバター名_21Facial_日時」を自動で付ける（作成のたびに別の名前になる）
-        private string _controllerName = string.Empty;
+        [SerializeField] private string _controllerName = string.Empty;
 
         // ジェスチャー表情ステートで Eyes & Eyelids を Animation にする (VRCAnimatorTrackingControl)
-        private bool _useTrackingControl = true;
+        [SerializeField] private bool _useTrackingControl = true;
 
         // Idle を経由せず、Any State から各表情へ直接遷移する
-        private bool _skipIdle;
+        [SerializeField] private bool _skipIdle;
 
         // 表情クリップを「最終フレームだけの 0 フレームアニメーション」に差し替えて使う
-        private bool _flattenClips;
+        [SerializeField] private bool _flattenClips;
         private string _flattenFolder;
         private readonly Dictionary<AnimationClip, AnimationClip> _flattenCache = new Dictionary<AnimationClip, AnimationClip>();
 
         // 表情変更を無効にするルール（複数可。いずれかが成立している間は無効）
+        [Serializable]
         private sealed class DisableRuleEntry
         {
             public string Name = "";
@@ -84,10 +90,10 @@ namespace yulEmo
         }
 
         // 表情を強制的に Idle にするルール
-        private readonly List<DisableRuleEntry> _disableRules = new List<DisableRuleEntry>();
+        [SerializeField] private List<DisableRuleEntry> _disableRules = new List<DisableRuleEntry>();
 
         // 表情変更を無効にする（Exit の条件に加える）ルール
-        private readonly List<DisableRuleEntry> _freezeRules = new List<DisableRuleEntry>();
+        [SerializeField] private List<DisableRuleEntry> _freezeRules = new List<DisableRuleEntry>();
 
         // 型ごとに選べる条件（Animator の仕様: Bool=If/IfNot, Int=Greater/Less/Equals/NotEqual, Float=Greater/Less）
         private static readonly yulEmoGenerator.DisableCondition[] BoolConditions =
@@ -112,20 +118,20 @@ namespace yulEmo
         private static readonly string[] FloatConditionLabels = { "Greater", "Less" };
 
         // 元の表情レイヤーとの干渉防止（デフォルト表情レイヤー）
-        private bool _resetOriginalFace = true;
-        private bool _excludeLipSyncAndBlink = true;
+        [SerializeField] private bool _resetOriginalFace = true;
+        [SerializeField] private bool _excludeLipSyncAndBlink = true;
         // アバターから読み込んだ際に検出した、元の表情レイヤーのクリップ
-        private readonly List<AnimationClip> _originalFacialClips = new List<AnimationClip>();
+        [SerializeField] private List<AnimationClip> _originalFacialClips = new List<AnimationClip>();
 
         // FaceFix のメニューアイコンを、アニメーター作成時に撮影して設定する
-        private bool _captureFaceFixIcons = true;
+        [SerializeField] private bool _captureFaceFixIcons = true;
         // 撮影用に複製したアバターへ NDMF の全プラグインを適用する（ビルド時と同じ状態で撮影）
-        private bool _captureWithNDMF = true;
+        [SerializeField] private bool _captureWithNDMF = true;
 
         // 生成後に Modular Avatar (Merge Animator / Menu Installer / Menu Item) を自動セットアップするか
-        private bool _setupModularAvatar = true;
+        [SerializeField] private bool _setupModularAvatar = true;
 
-        private Vector2 _scroll;
+        [SerializeField] private Vector2 _scroll;
 
         // ジェスチャー情報（名前・値は固定）
         private static readonly (string Label, string Name, int Value)[] GestureInfos =
@@ -308,6 +314,7 @@ namespace yulEmo
                     "オン: 各表情へ Any State から直接遷移します。ある表情から別の表情へ、Idle を経由せずに切り替わります。\n" +
                     "・何も押していないとき（ジェスチャー 0）は Exit → Idle に戻ります。\n" +
                     "・FaceFix で使っている値のときは、ジェスチャー表情へ遷移しません（FaceFix が優先されます）。\n" +
+                    "・Both のとき左右のジェスチャーが同時に出たら、左が優先されます（単一レイヤーでは同時に 1 つの表情しか持てないため）。\n" +
                     "・FaceLock / 無効化ルール / FacePreset の条件は標準と同じように働きます。"),
                 _skipIdle);
 
@@ -328,7 +335,7 @@ namespace yulEmo
                 "ジェスチャーステートにいる場合も Idle へ戻されます（OR 条件）。\n" +
                 "※ パラメータの宣言（Expression Parameters 等）は行いません。\n" +
                 "※ Float は Animator の仕様上 Greater / Less のみです。しきい値とちょうど同じ値のときは、\n" +
-                "   成立にも不成立にもならず、Idle から動かなくなります。",
+                "   「成立していない」側として扱います。",
                 "※ 未設定の場合、強制的に Idle にする処理は行いません。");
 
             EditorGUILayout.Space(4);
@@ -1032,11 +1039,8 @@ namespace yulEmo
                 return;
             }
 
-            var descriptor = avatarObj.GetComponent<VRCAvatarDescriptor>();
-            if (descriptor == null)
-            {
-                descriptor = avatarObj.GetComponentInChildren<VRCAvatarDescriptor>();
-            }
+            // 他の場所と同じ探し方にそろえる（親 → 子）。アバター配下のオブジェクトを渡されても見つかるようになる
+            var descriptor = yulEmoEditorUtility.FindDescriptor(avatarObj);
 
             if (descriptor == null)
             {
@@ -1217,11 +1221,20 @@ namespace yulEmo
                 if (!overwriteEmo) return;
             }
 
+            // コントローラー名の検証は、削除や生成より前に済ませる
+            // ファイル名に使えない文字（/ や : など）が混ざると、旧コントローラーを消した後に作成だけ失敗する形になるため
+            if (controllerName.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0)
+            {
+                EditorUtility.DisplayDialog("21Emo", $"コントローラー名「{controllerName}」に、ファイル名として使えない文字が含まれています。", "OK");
+                return;
+            }
+
             yulEmoEditorUtility.EnsureFolder(_outputFolder.TrimEnd('/'));
 
             var assetPath = $"{_outputFolder.TrimEnd('/')}/{controllerName}.controller";
 
-            if (AssetDatabase.LoadAssetAtPath<AnimatorController>(assetPath) != null)
+            var replacing = AssetDatabase.LoadAssetAtPath<AnimatorController>(assetPath) != null;
+            if (replacing)
             {
                 var overwrite = EditorUtility.DisplayDialog(
                     "21Emo",
@@ -1229,27 +1242,50 @@ namespace yulEmo
                     "上書きする",
                     "キャンセル");
                 if (!overwrite) return;
-                AssetDatabase.DeleteAsset(assetPath);
+                // ここではまだ消さない。生成が成功してから置き換える
             }
 
-            // 最終フレームだけのクリップを作る場合は、専用フォルダを作り直してから BuildConfig で差し替える
+            // 最終フレームだけのクリップを作る場合は、専用フォルダ内の同名クリップを BuildConfig で差し替える
+            // フォルダごと消すと、ユーザーが置いた別のアセットまで巻き込んで消えるので、フォルダ削除はしない
+            // 同名クリップの上書き・再利用は ClipFlattener 側で行う
             _flattenCache.Clear();
             _flattenFolder = null;
             if (_flattenClips)
             {
                 _flattenFolder = $"{_outputFolder.TrimEnd('/')}/{controllerName}_Clips";
-                if (AssetDatabase.IsValidFolder(_flattenFolder))
-                {
-                    AssetDatabase.DeleteAsset(_flattenFolder);
-                }
                 yulEmoEditorUtility.EnsureFolder(_flattenFolder);
             }
 
-            var config = BuildConfig();
+            // 生成は一時パスで先に行い、成功したら既存のコントローラーと置き換える
+            // 途中で例外が出ても、既存のコントローラーはそのまま残る
+            var tempPath = $"{_outputFolder.TrimEnd('/')}/{controllerName}_tmp_{System.Guid.NewGuid().ToString("N").Substring(0, 8)}.controller";
 
+            yulEmoGenerator.Config config = null;
             string iconMessage = null;
+            try
+            {
+                config = BuildConfig();
+                yulEmoGenerator.Generate(config, tempPath);
+            }
+            catch (System.Exception e)
+            {
+                AssetDatabase.DeleteAsset(tempPath);
+                Debug.LogException(e);
+                EditorUtility.DisplayDialog("21Emo", $"作成に失敗しました。既存のコントローラーは変更していません。\n\n{e.Message}", "OK");
+                return;
+            }
 
-            yulEmoGenerator.Generate(config, assetPath);
+            if (replacing)
+            {
+                AssetDatabase.DeleteAsset(assetPath);
+            }
+            var moveError = AssetDatabase.MoveAsset(tempPath, assetPath);
+            if (!string.IsNullOrEmpty(moveError))
+            {
+                // 置き換えに失敗した場合は、生成済みのファイルを消さずに場所を知らせる
+                EditorUtility.DisplayDialog("21Emo", $"コントローラーの置き換えに失敗しました。\n生成したファイルは一時ファイルとして残しています。\n{tempPath}\n\n{moveError}", "OK");
+                return;
+            }
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
@@ -1257,6 +1293,12 @@ namespace yulEmo
             var result = AssetDatabase.LoadAssetAtPath<AnimatorController>(assetPath);
             if (result != null)
             {
+                // 一時ファイル名がアセット名に残る場合は、本来の名前に戻す
+                if (result.name != controllerName)
+                {
+                    result.name = controllerName;
+                    EditorUtility.SetDirty(result);
+                }
                 EditorGUIUtility.PingObject(result);
                 Selection.activeObject = result;
             }

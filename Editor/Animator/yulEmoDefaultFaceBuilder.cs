@@ -29,11 +29,7 @@ namespace yulEmo
             var result = new List<yulEmoGenerator.DefaultFaceBinding>();
             if (avatarObject == null || clips == null) return result.ToArray();
 
-            var descriptor = avatarObject.GetComponentInParent<VRCAvatarDescriptor>();
-            if (descriptor == null)
-            {
-                descriptor = avatarObject.GetComponentInChildren<VRCAvatarDescriptor>();
-            }
+            var descriptor = yulEmoEditorUtility.FindDescriptor(avatarObject);
             if (descriptor == null) return result.ToArray();
 
             var root = descriptor.transform;

@@ -87,11 +87,7 @@ namespace yulEmo
                 return false;
             }
 
-            var descriptor = avatarObject.GetComponentInParent<VRCAvatarDescriptor>();
-            if (descriptor == null)
-            {
-                descriptor = avatarObject.GetComponentInChildren<VRCAvatarDescriptor>();
-            }
+            var descriptor = yulEmoEditorUtility.FindDescriptor(avatarObject);
 
             if (descriptor == null)
             {
@@ -291,11 +287,7 @@ namespace yulEmo
         {
             if (avatarObject == null || icons == null) return;
 
-            var descriptor = avatarObject.GetComponentInParent<VRCAvatarDescriptor>();
-            if (descriptor == null)
-            {
-                descriptor = avatarObject.GetComponentInChildren<VRCAvatarDescriptor>();
-            }
+            var descriptor = yulEmoEditorUtility.FindDescriptor(avatarObject);
             if (descriptor == null) return;
 
             var root = descriptor.transform.Find(RootObjectName);

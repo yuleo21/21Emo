@@ -45,6 +45,9 @@ namespace yulEmo
     ///     - Entry → 各表情ステート（Idle → 表情 と同じ条件）。どの条件も成立しないときだけ、デフォルトステートの Idle に入る
     ///     - Idle → Exit（各 Entry 遷移と同じ条件。Idle にいる間に条件が成立したら Entry へ戻して表情へ入る）
     ///     - 各表情ステート → Exit → Entry なので、表情から別の表情へ Idle を挟まずに切り替わる
+    ///     - Both モードでは Entry 遷移が左右それぞれに作られるが、Entry は上から評価されて最初に条件が合った 1 本だけが選ばれる。
+    ///       単一レイヤーでは同時に 1 ステートしか持てないため、これは仕様として受け入れる（優先順位は Idle 経由のときと同じで、左が先）。
+    ///       左右を同時に表情として出すことは、このレイヤー構成ではどちらにしてもできない
     ///   FaceFix ステート (1〜8):
     ///     - Any State → 各 FaceFix ステート（条件: FaceFix == value, Duration: 0.1s） ※FaceLock条件は不要
     ///     - 各 FaceFix ステート → Exit（条件: FaceFix != value, Duration: 0.1s）
@@ -740,15 +743,20 @@ namespace yulEmo
                             p = fx.FloatParameter(name);
                             floatParams[name] = p;
                         }
-                        // Animator の Float 条件は Greater / Less のみ。
-                        // 値がしきい値とちょうど等しい場合は、成立・不成立のどちらにもならない。
+                        // Animator の Float 条件は Greater / Less のみで、ちょうど等しい場合を直接表せない。
+                        // しきい値ちょうどは「不成立（有効）」側に寄せる。0 や 1 のしきい値ではパラメータが
+                        // ちょうどその値になるのが普通の状態で、成立・不成立のどちらにもならないと、
+                        // ガード付きの遷移が全部止まってしまうため。
+                        // 不成立側の境界をわずかにずらして、ちょうど等しい場合を含むようにする
+                        // （しきい値よりわずかに大きい範囲では成立側も同時に真になるが、幅 0.0001 の一瞬だけのため許容する）。
+                        const float boundaryEpsilon = 0.0001f;
                         switch (rule.Condition)
                         {
                             case DisableCondition.Greater:
-                                result.Add(new DisableConditionPair(p.IsGreaterThan(rule.Value), p.IsLessThan(rule.Value)));
+                                result.Add(new DisableConditionPair(p.IsGreaterThan(rule.Value), p.IsLessThan(rule.Value + boundaryEpsilon)));
                                 continue;
                             case DisableCondition.Less:
-                                result.Add(new DisableConditionPair(p.IsLessThan(rule.Value), p.IsGreaterThan(rule.Value)));
+                                result.Add(new DisableConditionPair(p.IsLessThan(rule.Value), p.IsGreaterThan(rule.Value - boundaryEpsilon)));
                                 continue;
                         }
                         break;

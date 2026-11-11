@@ -65,7 +65,7 @@ namespace yulEmo
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("アニメーションの差し替え", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "「差し替えを実行」を押すと、コントローラーのアセットの中の「差し替え前」のクリップを「差し替え後」のクリップに直接書き換えます（元に戻せません）。\n" +
+                "「差し替えを実行」を押すと、コントローラーの複製を作り、複製の中で「差し替え前」のクリップを「差し替え後」のクリップに書き換えて、Merge Animator の参照を複製へ差し替えます。元のコントローラーは変更されません。\n" +
                 "「差し替え後」が空の行は無視されます。実行後は、差し替え一覧の「差し替え前」が新しいクリップに更新されます。",
                 MessageType.None);
 
@@ -139,7 +139,7 @@ namespace yulEmo
 
             if (!EditorUtility.DisplayDialog(
                     "21Emo",
-                    "コントローラーのアセットを直接書き換えます。元に戻せません。\n実行しますか？",
+                    "コントローラーの複製を作成して、複製のほうを書き換えます。元のコントローラーは変更されません。\n実行しますか？",
                     "実行する", "キャンセル"))
             {
                 return;

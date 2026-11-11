@@ -130,10 +130,17 @@ namespace yulEmo
 
         private readonly List<Term> _terms = new List<Term>();
 
+        // 照合がタイムアウトした正規表現は、以降のシェイプキーでは照合しない
+        // 重い正規表現だと、シェイプキーの数だけタイムアウト待ちが積み上がるため
+        private readonly HashSet<Regex> _timedOutPatterns = new HashSet<Regex>();
+
         public bool IsEmpty => _terms.Count == 0;
 
         /// <summary>正規表現として読めず、文字どおりに探した語があるか。</summary>
         public bool HasInvalidPattern { get; private set; }
+
+        /// <summary>照合が重くて、途中で打ち切った正規表現があるか。</summary>
+        public bool HasTimedOutPattern => _timedOutPatterns.Count > 0;
 
         public static yulEmoShapeQuery Parse(string raw)
         {
@@ -204,8 +211,10 @@ namespace yulEmo
             return true;
         }
 
-        private static int ScoreName(yulEmoShapeTarget target, Regex pattern)
+        private int ScoreName(yulEmoShapeTarget target, Regex pattern)
         {
+            if (_timedOutPatterns.Contains(pattern)) return -1;
+
             Match match;
             try
             {
@@ -213,6 +222,7 @@ namespace yulEmo
             }
             catch (RegexMatchTimeoutException)
             {
+                _timedOutPatterns.Add(pattern);
                 return -1;
             }
 
@@ -223,14 +233,17 @@ namespace yulEmo
             return 3;
         }
 
-        private static int ScoreGroup(yulEmoShapeTarget target, Regex pattern)
+        private int ScoreGroup(yulEmoShapeTarget target, Regex pattern)
         {
+            if (_timedOutPatterns.Contains(pattern)) return -1;
+
             try
             {
                 return pattern.IsMatch(target.GroupFolded) ? 2 : -1;
             }
             catch (RegexMatchTimeoutException)
             {
+                _timedOutPatterns.Add(pattern);
                 return -1;
             }
         }

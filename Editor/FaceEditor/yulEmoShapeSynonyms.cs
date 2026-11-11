@@ -21,6 +21,15 @@ namespace yulEmo
 
         private static string[][] _groups = new string[0][];
         private static string _stamp;
+        private static List<string> _paths;
+        // 対応表ファイルの一覧を探し直す必要があるか。ファイルの増減は AssetPostprocessor で検知する
+        private static bool _filesDirty = true;
+
+        /// <summary>対応表ファイルが追加・変更・削除されたときに、次回の一覧の探し直しを予約する。</summary>
+        internal static void MarkFilesDirty()
+        {
+            _filesDirty = true;
+        }
 
         /// <summary>JSON の形。groups の各要素が、同じ意味の語の組。</summary>
         [Serializable]
@@ -47,7 +56,17 @@ namespace yulEmo
 
         private static void ReloadIfChanged()
         {
-            var paths = FindFiles();
+            // ファイルの一覧（FindAssets）は、対応表ファイルの増減があったときだけ探し直す
+            // 検索のたびにプロジェクト全体を探すと、キー入力のたびに重くなるため
+            // 中身の変更は、更新日時の確認（ファイル数が少ないので軽い）でこれまでどおり検知する
+            if (_filesDirty || _paths == null)
+            {
+                _paths = FindFiles();
+                _filesDirty = false;
+                _stamp = null;
+            }
+            var paths = _paths;
+
             var stamp = BuildStamp(paths);
             if (stamp == _stamp) return;
             _stamp = stamp;
@@ -162,6 +181,27 @@ namespace yulEmo
             foreach (var word in words)
             {
                 if (!target.Contains(word)) target.Add(word);
+            }
+        }
+    }
+
+    /// <summary>対応表ファイル（yulEmoShapeSynonyms.json）の追加・変更・削除・移動を検知して、読み直しの対象にする。</summary>
+    internal class yulEmoShapeSynonymsWatcher : AssetPostprocessor
+    {
+        private static void OnPostprocessAllAssets(
+            string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths)
+        {
+            foreach (var path in importedAssets) MarkIfSynonym(path);
+            foreach (var path in deletedAssets) MarkIfSynonym(path);
+            foreach (var path in movedAssets) MarkIfSynonym(path);
+            foreach (var path in movedFromAssetPaths) MarkIfSynonym(path);
+        }
+
+        private static void MarkIfSynonym(string path)
+        {
+            if (path != null && path.EndsWith("yulEmoShapeSynonyms.json", StringComparison.OrdinalIgnoreCase))
+            {
+                yulEmoShapeSynonyms.MarkFilesDirty();
             }
         }
     }

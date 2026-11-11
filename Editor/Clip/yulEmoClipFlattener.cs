@@ -8,6 +8,9 @@ namespace yulEmo
     /// 2 フレームなどの複数フレームを持つアニメーションクリップから、
     /// 最終フレームの値だけを持つ「0 フレーム（キーが 1 つだけ）」の新しいクリップを作る。
     /// 元のクリップは変更しない。
+    /// クリップ設定（AnimationClipSettings）は引き継ぐが、startTime / stopTime だけは 0 に戻す。
+    /// アニメーションイベントは引き継がない（最終フレームの姿勢だけを持つクリップのため）。
+    /// 同名のクリップが保存先にある場合は、新規作成ではなく中身を上書きして再利用する。
     /// </summary>
     public static class yulEmoClipFlattener
     {
@@ -28,6 +31,14 @@ namespace yulEmo
                 name = source.name + Suffix,
                 frameRate = source.frameRate,
             };
+
+            // クリップ設定（Loop Time など）は引き継ぐ。引き継がないと、ループが必要な表情がフラット化で壊れるため
+            // ただし startTime / stopTime は元の長さ前提の値で、そのまま写すと長さ 0 のクリップの再生範囲が
+            // 元クリップの長さになってしまうので、この 2 つだけ 0 に戻す
+            var settings = AnimationUtility.GetAnimationClipSettings(source);
+            settings.startTime = 0f;
+            settings.stopTime = 0f;
+            AnimationUtility.SetAnimationClipSettings(result, settings);
 
             // 数値カーブ（ブレンドシェイプ・Transform・有効/無効 など）
             foreach (var binding in AnimationUtility.GetCurveBindings(source))
@@ -52,7 +63,23 @@ namespace yulEmo
                     new[] { new ObjectReferenceKeyframe { time = 0f, value = last.value } });
             }
 
-            var path = AssetDatabase.GenerateUniqueAssetPath($"{folder.TrimEnd('/')}/{result.name}.anim");
+            // 同名のクリップが既にある場合は、中身を上書きして再利用する
+            // 実行のたびに新しいファイルを作ると、使われていないクリップがフォルダに溜まっていくため
+            var path = $"{folder.TrimEnd('/')}/{result.name}.anim";
+            var existing = AssetDatabase.LoadAssetAtPath<AnimationClip>(path);
+            if (existing != null && existing != source)
+            {
+                EditorUtility.CopySerialized(result, existing);
+                EditorUtility.SetDirty(existing);
+                UnityEngine.Object.DestroyImmediate(result);
+                return existing;
+            }
+
+            if (existing == source)
+            {
+                // 元クリップ自身と衝突する場合は、元を上書きしないよう別名で作る
+                path = AssetDatabase.GenerateUniqueAssetPath(path);
+            }
             AssetDatabase.CreateAsset(result, path);
             return result;
         }

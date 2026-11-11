@@ -94,11 +94,7 @@ namespace yulEmo
                 return result;
             }
 
-            var descriptor = avatarObject.GetComponentInParent<VRCAvatarDescriptor>();
-            if (descriptor == null)
-            {
-                descriptor = avatarObject.GetComponentInChildren<VRCAvatarDescriptor>();
-            }
+            var descriptor = yulEmoEditorUtility.FindDescriptor(avatarObject);
             if (descriptor == null)
             {
                 message = "アイコンを撮影できませんでした（VRCAvatarDescriptor が見つかりません）。";
@@ -301,6 +297,8 @@ namespace yulEmo
         /// <summary>
         /// Camera.scene（指定したシーンの中だけを描画する設定）を設定する。
         /// Unity のバージョンによる公開範囲の違いに左右されないよう、リフレクションで設定する。
+        /// 見つからない場合は、例外で撮影全体を止めず、警告を出して設定なしで続ける
+        /// （カメラ自体はプレビュー用シーンの中に作られるため、設定なしでも撮影できることが多い）。
         /// </summary>
         internal static void SetCameraScene(Camera cam, Scene scene)
         {
@@ -309,7 +307,8 @@ namespace yulEmo
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (property == null || !property.CanWrite)
             {
-                throw new MissingMemberException("Camera.scene が見つかりません。この Unity のバージョンでは撮影できません。");
+                Debug.LogWarning(LogPrefix + "Camera.scene が見つからないため、シーンを指定せずに撮影します。この Unity のバージョンでは、意図しないものが写る可能性があります。");
+                return;
             }
             property.SetValue(cam, scene);
         }

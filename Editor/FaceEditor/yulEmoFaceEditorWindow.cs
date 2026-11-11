@@ -75,11 +75,20 @@ namespace yulEmo
         private GUIStyle _groupLabelStyle;
         private string _queryText;
         private yulEmoShapeQuery _query;
+        // 表示中の一覧のキャッシュ。条件が同じなら、照合をやり直さない
+        private RendererInfo _visibleCacheInfo;
+        private string _visibleCacheKey;
+        private List<int> _visibleCacheResult;
+        private string _visibleCacheNote;
 
         private int _hoverShape = -1;
         private int _hoverCandidate = -1;
 
         private readonly List<RendererInfo> _infos = new List<RendererInfo>();
+        // _infos を調査したときのアバター。Undo でアバターが戻ったかどうかの判定に使う
+        private GameObject _rebuiltAvatar;
+        // スライダーのドラッグ中に Undo 記録を増やさないための、操作中コントロールの記録
+        private int _undoHotControl;
 
 
         [MenuItem("21tools/21Emo Face Editor")]
@@ -113,6 +122,7 @@ namespace yulEmo
             wantsMouseMove = true;
             _outputFolder = EditorPrefs.GetString(FolderPrefsKey, "Assets");
             EditorApplication.update += OnEditorUpdate;
+            Undo.undoRedoPerformed += OnUndoRedoPerformed;
 
             QueueRebuild();
         }
@@ -120,6 +130,13 @@ namespace yulEmo
         private void OnDisable()
         {
             EditorApplication.update -= OnEditorUpdate;
+            Undo.undoRedoPerformed -= OnUndoRedoPerformed;
+
+            // 閉じた後に保留中の処理が走らないよう、登録した delayCall はここで外す
+            // 破棄済みのウィンドウに対して Rebuild や Export が実行される経路を断つため
+            EditorApplication.delayCall -= Rebuild;
+            EditorApplication.delayCall -= Export;
+            _rebuildQueued = false;
 
             TeardownCamera();
         }
@@ -162,6 +179,7 @@ namespace yulEmo
             }
 
             var e = Event.current;
+            if (e.type == EventType.MouseUp) _undoHotControl = 0;
             if (e.type == EventType.MouseMove) Repaint();
             if (e.type == EventType.MouseLeaveWindow)
             {
@@ -198,13 +216,27 @@ namespace yulEmo
             }
         }
 
+        /// <summary>
+        /// Undo / Redo でウィンドウの状態（アバターや編集リスト）が戻ったときに、表示とプレビューを作り直す。
+        /// アバターが変わっていたときだけ、調査からやり直す。
+        /// </summary>
+        private void OnUndoRedoPerformed()
+        {
+            if (_avatar != _rebuiltAvatar) QueueRebuild();
+            _dirty = true;
+            Repaint();
+        }
+
         private void DrawAvatarField()
         {
             EditorGUI.BeginChangeCheck();
-            _avatar = (GameObject)EditorGUILayout.ObjectField("アバター", _avatar, typeof(GameObject), true);
+            var newAvatar = (GameObject)EditorGUILayout.ObjectField("アバター", _avatar, typeof(GameObject), true);
             var changed = EditorGUI.EndChangeCheck();
             if (changed)
             {
+                // 値を差し替える前に記録する。Undo で変更前の状態を戻せるようにするため
+                Undo.RecordObject(this, "21Emo: アバター変更");
+                _avatar = newAvatar;
                 _entries.Clear();
                 _seededAvatar = null;
                 _hiddenGroups = DefaultHiddenGroups();
@@ -378,6 +410,15 @@ namespace yulEmo
                 _query = yulEmoShapeQuery.Parse(_search);
             }
 
+            // 同じ条件での再計算を避ける。OnGUI は 1 フレームに何度も呼ばれるうえ、
+            // 正規表現の照合はシェイプキーの数だけ走るので、毎回計算すると重い検索で固まる
+            var key = BuildVisibleCacheKey();
+            if (_visibleCacheInfo == info && _visibleCacheKey == key && _visibleCacheResult != null)
+            {
+                note = _visibleCacheNote;
+                return _visibleCacheResult;
+            }
+
             var result = CollectShapes(info, false);
             if (result.Count == 0 && !_query.IsEmpty)
             {
@@ -386,7 +427,26 @@ namespace yulEmo
             }
 
             if (_query.HasInvalidPattern) note += "　（正規表現として読めない語は、文字どおりに探しました）";
+            if (_query.HasTimedOutPattern) note += "　（重い正規表現のため、一部の語の照合を打ち切りました）";
+
+            _visibleCacheInfo = info;
+            _visibleCacheKey = key;
+            _visibleCacheResult = result;
+            _visibleCacheNote = note;
             return result;
+        }
+
+        /// <summary>表示中の一覧を決める入力だけから、キャッシュのキーを作る。</summary>
+        private string BuildVisibleCacheKey()
+        {
+            // 編集リストは、中身の値ではなく「どのシェイプキーが入っているか」だけが一覧に効く
+            var entriesHash = 0;
+            foreach (var entry in _entries)
+            {
+                entriesHash = entriesHash * 31 + (entry.Path ?? string.Empty).GetHashCode();
+                entriesHash = entriesHash * 31 + (entry.ShapeName ?? string.Empty).GetHashCode();
+            }
+            return string.Join("|", _search, _onlyEditing, string.Join(",", _hiddenGroups), entriesHash);
         }
 
         private List<int> CollectShapes(RendererInfo info, bool includeHiddenGroups)
@@ -440,6 +500,7 @@ namespace yulEmo
                     var value = EditorGUILayout.Slider(entry.Value, 0f, 100f);
                     if (EditorGUI.EndChangeCheck())
                     {
+                        RecordUndoOncePerDrag("21Emo: シェイプキーの値変更");
                         entry.Value = value;
                         _dirty = true;
                     }
@@ -450,6 +511,7 @@ namespace yulEmo
 
             if (removeAt >= 0)
             {
+                Undo.RecordObject(this, "21Emo: シェイプキーを削除");
                 _entries.RemoveAt(removeAt);
                 _dirty = true;
             }
@@ -511,6 +573,14 @@ namespace yulEmo
         private void AddEntry(string path, string shapeName)
         {
             var existing = FindEntry(path, shapeName);
+            if (existing != null && existing.Value == 100f)
+            {
+                // 既に 100 で追加済みなら、状態は変わらない（Undo の記録も作らない）
+                _dirty = true;
+                return;
+            }
+
+            Undo.RecordObject(this, "21Emo: シェイプキーを追加");
             if (existing != null)
             {
                 existing.Value = 100f;
@@ -520,6 +590,18 @@ namespace yulEmo
                 _entries.Add(new Entry { Path = path, ShapeName = shapeName, Value = 100f });
             }
             _dirty = true;
+        }
+
+        /// <summary>
+        /// スライダーのドラッグ中は、最初の 1 回だけ Undo に記録する。
+        /// ドラッグは OnGUI のたびに値が変わるので、毎回記録すると Undo の履歴が細切れになるため。
+        /// </summary>
+        private void RecordUndoOncePerDrag(string label)
+        {
+            var control = GUIUtility.hotControl;
+            if (_undoHotControl == control && control != 0) return;
+            _undoHotControl = control;
+            Undo.RecordObject(this, label);
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -603,6 +685,8 @@ namespace yulEmo
         private void Rebuild()
         {
             _rebuildQueued = false;
+            _rebuiltAvatar = _avatar;
+            _visibleCacheInfo = null;
             _state.Weights = new Dictionary<Renderer, KeyValuePair<string, float>[]>();
             _infos.Clear();
             _movedCache.Clear();
