@@ -10,7 +10,9 @@ namespace yulEmo
     /// 元のクリップは変更しない。
     /// クリップ設定（AnimationClipSettings）は引き継ぐが、startTime / stopTime だけは 0 に戻す。
     /// アニメーションイベントは引き継がない（最終フレームの姿勢だけを持つクリップのため）。
-    /// 同名のクリップが保存先にある場合は、新規作成ではなく中身を上書きして再利用する。
+    /// 保存先のファイル名には、元のクリップの GUID の先頭 8 文字を付ける。同名の別のクリップと
+    /// 保存先が衝突して、黙って 1 つに潰れることを防ぐため。同じ元クリップをもう一度変換した場合は、
+    /// 同じファイルになるので、新規作成ではなく中身を上書きして再利用する。
     /// </summary>
     public static class yulEmoClipFlattener
     {
@@ -63,14 +65,20 @@ namespace yulEmo
                     new[] { new ObjectReferenceKeyframe { time = 0f, value = last.value } });
             }
 
-            // 同名のクリップが既にある場合は、中身を上書きして再利用する
-            // 実行のたびに新しいファイルを作ると、使われていないクリップがフォルダに溜まっていくため
-            var path = $"{folder.TrimEnd('/')}/{result.name}.anim";
+            // 同じ元クリップの変換結果が既にある場合は、中身を上書きして再利用する
+            // 実行のたびに新しいファイルを作ると、使われていないクリップがフォルダに溜まっていくため。
+            // ファイル名に元クリップの GUID を入れているので、同名の別のクリップの結果とは衝突しない
+            var sourcePath = AssetDatabase.GetAssetPath(source);
+            var sourceGuid = string.IsNullOrEmpty(sourcePath) ? string.Empty : AssetDatabase.AssetPathToGUID(sourcePath);
+            var fileName = string.IsNullOrEmpty(sourceGuid) ? result.name : $"{result.name}_{sourceGuid.Substring(0, 8)}";
+            var path = $"{folder.TrimEnd('/')}/{fileName}.anim";
             var existing = AssetDatabase.LoadAssetAtPath<AnimationClip>(path);
             if (existing != null && existing != source)
             {
                 EditorUtility.CopySerialized(result, existing);
                 EditorUtility.SetDirty(existing);
+                // 呼び出し側が保存しない経路でも、上書きした内容が残るようにここで保存する
+                AssetDatabase.SaveAssetIfDirty(existing);
                 UnityEngine.Object.DestroyImmediate(result);
                 return existing;
             }

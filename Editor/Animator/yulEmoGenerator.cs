@@ -1,4 +1,5 @@
 #if UNITY_EDITOR
+using System;
 using System.Collections.Generic;
 using AnimatorAsCode.V1;
 using UnityEditor;
@@ -747,16 +748,17 @@ namespace yulEmo
                         // しきい値ちょうどは「不成立（有効）」側に寄せる。0 や 1 のしきい値ではパラメータが
                         // ちょうどその値になるのが普通の状態で、成立・不成立のどちらにもならないと、
                         // ガード付きの遷移が全部止まってしまうため。
-                        // 不成立側の境界をわずかにずらして、ちょうど等しい場合を含むようにする
-                        // （しきい値よりわずかに大きい範囲では成立側も同時に真になるが、幅 0.0001 の一瞬だけのため許容する）。
-                        const float boundaryEpsilon = 0.0001f;
+                        // 不成立側の境界には、しきい値の「次の float」を使う（例: 成立が「値より大きい」で、
+                        // 不成立は「次の float より小さい」=「値以下」と同じ）。ちょうど等しい場合だけが
+                        // 不成立側に含まれ、成立側と同時に真になる範囲は生まれない。幅のあるずらし方だと、
+                        // その帯の中では入る遷移と Exit する遷移が同時に成立し、ステートを出入りし続けるため。
                         switch (rule.Condition)
                         {
                             case DisableCondition.Greater:
-                                result.Add(new DisableConditionPair(p.IsGreaterThan(rule.Value), p.IsLessThan(rule.Value + boundaryEpsilon)));
+                                result.Add(new DisableConditionPair(p.IsGreaterThan(rule.Value), p.IsLessThan(NextFloatUp(rule.Value))));
                                 continue;
                             case DisableCondition.Less:
-                                result.Add(new DisableConditionPair(p.IsLessThan(rule.Value), p.IsGreaterThan(rule.Value - boundaryEpsilon)));
+                                result.Add(new DisableConditionPair(p.IsLessThan(rule.Value), p.IsGreaterThan(NextFloatDown(rule.Value))));
                                 continue;
                         }
                         break;
@@ -767,6 +769,24 @@ namespace yulEmo
             }
 
             return result;
+        }
+
+        /// <summary>value より大きい、最も近い float を返す（ビット列を 1 つ進める）。</summary>
+        private static float NextFloatUp(float value)
+        {
+            if (float.IsNaN(value) || value == float.PositiveInfinity) return value;
+            if (value == 0f) return float.Epsilon;
+
+            // SingleToInt32Bits は Unity の .NET プロファイルによっては無いことがあるので、GetBytes 経由で変換する
+            var bits = BitConverter.ToInt32(BitConverter.GetBytes(value), 0);
+            bits += bits >= 0 ? 1 : -1;
+            return BitConverter.ToSingle(BitConverter.GetBytes(bits), 0);
+        }
+
+        /// <summary>value より小さい、最も近い float を返す。</summary>
+        private static float NextFloatDown(float value)
+        {
+            return -NextFloatUp(-value);
         }
 
         /// <summary>Idle → ジェスチャーステートの遷移に、全ルールの「不成立」条件を AND で追加する。</summary>

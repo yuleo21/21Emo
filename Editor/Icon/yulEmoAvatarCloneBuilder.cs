@@ -1,7 +1,6 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Reflection;
 using UnityEditor;
 using UnityEngine;
@@ -12,7 +11,7 @@ namespace yulEmo
     /// アイコン撮影とカメラプレビューで使う、撮影用のアバター複製を作る処理。
     ///
     /// ・アバターを複製し、必要なら NDMF の全プラグインを適用する。適用で表情のシェイプキーが全て見つからなくなった
-    ///   ときだけ適用しない複製に切り替え、一部が見つからないときは、その分が反映されないことを知らせて適用したまま撮影する。
+    ///   ときだけ適用しない複製に切り替え、一部が見つからないときは、その分が反映されないことを Console に出して適用したまま撮影する。
     /// ・表情クリップのカーブ（ブレンドシェイプ・オブジェクトの有効/無効・レンダラーの有効/無効・マテリアル）を、
     ///   AnimationClip.SampleAnimation を使わずに複製へ直接適用する。適用した変更は ChangeLog で元に戻せる。
     /// 元のアバターには触らない。
@@ -21,9 +20,6 @@ namespace yulEmo
     {
         // ログの接頭辞は、撮影側（yulEmoIconCapturer）と合わせる
         private const string LogPrefix = "[21Emo] アイコン撮影: ";
-
-        // NDMF 適用後にシェイプキーが見つからなかったときの診断ファイル（プロジェクトのルートに書く）
-        private const string DiagnosisFileName = "21Emo_NDMF_CaptureDiagnosis.txt";
 
         private const string BlendShapePrefix = "blendShape.";
         private const string MaterialPrefix = "m_Materials.Array.data[";
@@ -40,9 +36,6 @@ namespace yulEmo
             {
                 try
                 {
-                    // 診断用に、NDMF を適用する前の複製に付いているコンポーネントの一覧を控えておく
-                    var componentInventory = CollectComponentInventory(clone);
-
                     // 自動最適化（Avatar Optimizer の Trace And Optimize）は、使われていないシェイプキーの削除や
                     // メッシュの統合をして、表情が反映されなくなることがあるので、複製からだけ外す。
                     StripAutoOptimizers(clone);
@@ -52,7 +45,7 @@ namespace yulEmo
 
                     // 汎用方針（個別の最適化ツールへの対策はしない）:
                     // NDMF の適用でシェイプキーが一部見つからなくなっても、複製は捨てない。
-                    // 見つからなかったものは「その分だけ撮影に反映されない」ものとして名前を報告し、NDMF を適用したまま撮影する。
+                    // 見つからなかったものは「その分だけ撮影に反映されない」ものとして Console に名前を出し、NDMF を適用したまま撮影する。
                     // 元のアバターで使えていたシェイプキーが全て見つからなくなった場合だけ、
                     // 表情が丸ごと反映されない撮影になるので、NDMF を適用しない複製に切り替える。
                     var totalUnique = CountUniqueBlendShapeBindings(clips);
@@ -69,34 +62,18 @@ namespace yulEmo
 
                     var resolvable = totalUnique - originalMissing.Count;
                     Debug.Log($"{LogPrefix}NDMF の適用で見つからなくなったシェイプキー: {lost.Count} 個（元のアバターで使えるシェイプキーは {resolvable} 個）");
-
-                    // 撮影中は Console に大量のログが流れて診断を探しにくいので、詳細はファイルにも書く
-                    var lostLines = new List<string>();
-                    foreach (var entry in lost) lostLines.Add(entry.Line);
-                    var extraSections = new List<string>
-                    {
-                        string.Empty,
-                        "== 撮影用複製にあったコンポーネント（NDMF 適用前） ==",
-                    };
-                    extraSections.AddRange(componentInventory);
-                    extraSections.AddRange(BuildRendererShapeDump(avatarRoot, clone, clips));
-                    var diagnosisPath = WriteDiagnosisFile(lost.Count, lostLines, extraSections);
-                    var diagnosisNote = diagnosisPath != null
-                        ? $"\n（詳細を、プロジェクトのルートの {DiagnosisFileName} に書きました）"
-                        : string.Empty;
+                    LogMissingBlendShapes(clone, clips);
 
                     if (resolvable > 0 && lost.Count >= resolvable)
                     {
-                        LogMissingBlendShapes(clone, clips);
                         Debug.LogWarning(LogPrefix + "NDMF の適用後は表情のシェイプキーが全て見つからなくなるため、NDMF を適用せずに撮影します");
-                        message = "NDMF の適用後は表情のシェイプキーが全て見つからなかったため、NDMF を適用せずに撮影しました。" + diagnosisNote;
+                        message = "NDMF の適用後は表情のシェイプキーが全て見つからなかったため、NDMF を適用せずに撮影しました。";
                         UnityEngine.Object.DestroyImmediate(clone);
                         clone = NewClone(avatarRoot);
                         return clone;
                     }
 
                     Debug.LogWarning($"{LogPrefix}見つからなくなったシェイプキーの分は撮影に反映されません: {JoinShapeNames(lost, 5)}");
-                    message = $"NDMF を適用して撮影しましたが、{lost.Count} 個のシェイプキーが見つからず、その分は反映されませんでした（{JoinShapeNames(lost, 5)}）。" + diagnosisNote;
                     return clone;
                 }
                 catch (Exception e)
@@ -528,7 +505,7 @@ namespace yulEmo
         }
 
         /// <summary>
-        /// root の中で見つからないシェイプキーを、理由付きで返す（Console と診断ファイルで共用する）。
+        /// root の中で見つからないシェイプキーを、理由付きで返す（Console への出力に使う）。
         /// 理由は、パス先のレンダラーが無い／メッシュが無い／そのレンダラーにシェイプキーが無い、のどれか。
         /// 同じ名前のシェイプキーが別のレンダラーに残っている場合は、その場所も入れる。
         /// </summary>
@@ -583,125 +560,6 @@ namespace yulEmo
                 }
             }
             return details;
-        }
-
-        /// <summary>
-        /// 診断の内容を、プロジェクトのルート（Assets フォルダの 1 つ上）のファイルに書く。
-        /// 撮影中は Console に大量のログが流れて診断ログを探しにくいため。失敗したら null を返す。
-        /// </summary>
-        private static string WriteDiagnosisFile(int lostCount, List<string> details, List<string> extraSections)
-        {
-            try
-            {
-                var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-                var path = Path.Combine(projectRoot, DiagnosisFileName);
-
-                var lines = new List<string>
-                {
-                    "21Emo アイコン撮影: NDMF の適用で見つからなくなったシェイプキーの診断",
-                    $"日時: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
-                    $"NDMF の適用で見つからなくなったシェイプキーの数: {lostCount}",
-                    string.Empty,
-                };
-                if (details.Count == 0)
-                {
-                    lines.Add("（詳細はありません）");
-                }
-                else
-                {
-                    lines.AddRange(details);
-                }
-                if (extraSections != null)
-                {
-                    lines.AddRange(extraSections);
-                }
-
-                File.WriteAllLines(path, lines);
-                Debug.Log($"{LogPrefix}診断をファイルに書きました: {path}");
-                return path;
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"{LogPrefix}診断ファイルに書けませんでした: {e.Message}");
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// root の中にあるコンポーネントの種類と数を、診断ファイル用に文字列の並びで返す。
-        /// どの最適化ツールがシェイプキーを消したかを絞るために使う。
-        /// </summary>
-        private static List<string> CollectComponentInventory(GameObject root)
-        {
-            var counts = new Dictionary<string, int>();
-            foreach (var component in root.GetComponentsInChildren<Component>(true))
-            {
-                if (component == null) continue;
-                var typeName = component.GetType().FullName ?? component.GetType().Name;
-                counts.TryGetValue(typeName, out var count);
-                counts[typeName] = count + 1;
-            }
-
-            var names = new List<string>(counts.Keys);
-            names.Sort(StringComparer.Ordinal);
-
-            var lines = new List<string>();
-            foreach (var name in names)
-            {
-                lines.Add($"{name} x{counts[name]}");
-            }
-            return lines;
-        }
-
-        /// <summary>
-        /// クリップが指すレンダラーごとに、元のアバターと NDMF 適用後のシェイプキー名を全て並べた診断用の文字列を返す。
-        /// 名前が変わっただけなのか、シェイプキー自体が消えたのかを比べるために使う。
-        /// </summary>
-        private static List<string> BuildRendererShapeDump(GameObject originalRoot, GameObject cloneRoot, AnimationClip[] clips)
-        {
-            var lines = new List<string>();
-            if (clips == null) return lines;
-
-            var seenPaths = new HashSet<string>();
-            foreach (var clip in clips)
-            {
-                if (clip == null) continue;
-                foreach (var binding in AnimationUtility.GetCurveBindings(clip))
-                {
-                    if (binding.type != typeof(SkinnedMeshRenderer) ||
-                        !binding.propertyName.StartsWith(BlendShapePrefix, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-                    if (!seenPaths.Add(binding.path)) continue;
-
-                    var original = ResolveComponentOrObject(originalRoot, binding) as SkinnedMeshRenderer;
-                    var processed = ResolveComponentOrObject(cloneRoot, binding) as SkinnedMeshRenderer;
-
-                    lines.Add(string.Empty);
-                    lines.Add($"== レンダラー '{binding.path}' のシェイプキー名一覧 ==");
-                    lines.Add($"-- 元のアバター（{(original != null && original.sharedMesh != null ? original.sharedMesh.blendShapeCount : 0)} 個） --");
-                    AddShapeNames(lines, original);
-                    lines.Add($"-- NDMF 適用後（{(processed != null && processed.sharedMesh != null ? processed.sharedMesh.blendShapeCount : 0)} 個） --");
-                    AddShapeNames(lines, processed);
-                }
-            }
-            return lines;
-        }
-
-        private static void AddShapeNames(List<string> lines, SkinnedMeshRenderer renderer)
-        {
-            if (renderer == null || renderer.sharedMesh == null)
-            {
-                lines.Add("（レンダラーまたはメッシュがありません）");
-                return;
-            }
-
-            var mesh = renderer.sharedMesh;
-            for (var i = 0; i < mesh.blendShapeCount; i++)
-            {
-                lines.Add(mesh.GetBlendShapeName(i));
-            }
         }
 
         /// <summary>

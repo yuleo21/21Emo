@@ -1,4 +1,5 @@
 #if UNITY_EDITOR
+using System;
 using System.Collections.Generic;
 using System.IO;
 using nadena.dev.modular_avatar.core;
@@ -75,6 +76,15 @@ namespace yulEmo
                 return false;
             }
 
+            // 元のコントローラーは書き換えず、複製を作ってそちらを書き換える。
+            // 0 フレーム化より先に行う。複製の作成に失敗したとき、作りかけのクリップが残らないようにするため
+            var target = PrepareCopy(controller, controllerPath, out var isNewCopy);
+            if (target == null)
+            {
+                message = "コントローラーの複製を作成できませんでした。";
+                return false;
+            }
+
             // 0 フレーム化
             var flattenedCount = 0;
             if (component.flattenToZeroFrame)
@@ -97,14 +107,6 @@ namespace yulEmo
                 }
             }
 
-            // 元のコントローラーは書き換えず、複製を作ってそちらを書き換える
-            var target = PrepareCopy(controller, controllerPath, out var isNewCopy);
-            if (target == null)
-            {
-                message = "コントローラーの複製を作成できませんでした。";
-                return false;
-            }
-
             // 複製側の書き換え
             var replaced = 0;
             foreach (var layer in target.layers)
@@ -113,6 +115,11 @@ namespace yulEmo
                 replaced += ReplaceInStateMachine(layer.stateMachine, map);
             }
             EditorUtility.SetDirty(target);
+
+            // Merge Animator とコンポーネントの変更は、Ctrl+Z 1 回でまとめて戻せるよう、同じ Undo グループに入れる
+            Undo.IncrementCurrentGroup();
+            var undoGroup = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName("21Emo: アニメーション差し替え");
 
             // Merge Animator の参照を複製へ差し替える（既に複製を指している場合はそのまま）
             if (isNewCopy)
@@ -140,6 +147,7 @@ namespace yulEmo
                 swap.replacement = null;
             }
             EditorUtility.SetDirty(component);
+            Undo.CollapseUndoOperations(undoGroup);
 
             // 保存は差し替えた複製だけに絞る。プロジェクト全体の保存はしない
             AssetDatabase.SaveAssetIfDirty(target);
@@ -161,7 +169,7 @@ namespace yulEmo
         {
             // 失敗して return する経路でも out 引数を確定させるため、最初に初期化する（CS0177 対策）
             isNewCopy = false;
-            if (controller.name.EndsWith(CopySuffix))
+            if (controller.name.EndsWith(CopySuffix, StringComparison.Ordinal))
             {
                 isNewCopy = false;
                 return controller;

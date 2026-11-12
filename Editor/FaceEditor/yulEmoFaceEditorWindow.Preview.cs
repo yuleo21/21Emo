@@ -95,14 +95,22 @@ namespace yulEmo
                 list.Add(new KeyValuePair<string, float>(shapeName, value));
             }
 
+            var foundDeadRenderer = false;
             foreach (var entry in _entries)
             {
                 var info = FindInfo(entry.Path);
                 if (info == null || !info.NameToIndex.ContainsKey(entry.ShapeName)) continue;
                 // シーン側で消された Renderer は、再調査するまで触らない（MissingReferenceException になるため）
-                if (info.Renderer == null) continue;
+                if (info.Renderer == null)
+                {
+                    foundDeadRenderer = true;
+                    continue;
+                }
                 Add(info, entry.ShapeName, entry.Value);
             }
+            // 消された Renderer を見つけたら、古い一覧のまま静かに止まらないよう、再調査を 1 回予約する
+            // （QueueRebuild 側で多重予約は防がれている）
+            if (foundDeadRenderer) QueueRebuild();
             if (TryGetHover(out var hoverInfo, out var hoverName) && hoverInfo.Renderer != null && FindEntry(hoverInfo.Path, hoverName) == null)
             {
                 Add(hoverInfo, hoverName, 100f);
