@@ -40,31 +40,39 @@ namespace yulEmo
                     // メッシュの統合をして、表情が反映されなくなることがあるので、複製からだけ外す。
                     StripAutoOptimizers(clone);
 
+                    // 設定（Preferences の「21Emo」）で指定されたコンポーネントも、複製からだけ外す
+                    StripUserExcludedComponents(clone);
+
                     ProcessWithNDMF(clone);
                     Debug.Log(LogPrefix + "NDMF を適用しました");
 
                     // 汎用方針（個別の最適化ツールへの対策はしない）:
                     // NDMF の適用でシェイプキーが一部見つからなくなっても、複製は捨てない。
                     // 見つからなかったものは「その分だけ撮影に反映されない」ものとして Console に名前を出し、NDMF を適用したまま撮影する。
-                    // 元のアバターで使えていたシェイプキーが全て見つからなくなった場合だけ、
+                    // 元のアバターで使えていたシェイプキーが、複製のどこにも無くなった場合だけ、
                     // 表情が丸ごと反映されない撮影になるので、NDMF を適用しない複製に切り替える。
+                    // 別のレンダラーに同じ名前があるもの（メッシュ統合などで置き場所が移ったもの）は「無くなった」には数えない。
+                    // クリップのパスでは適用できないが、NDMF の適用結果全体を捨てる理由にはならないため。
                     var totalUnique = CountUniqueBlendShapeBindings(clips);
                     var originalMissing = CollectMissingBlendShapes(avatarRoot, clips);
                     var cloneMissing = CollectMissingBlendShapes(clone, clips);
                     var originalMissingKeys = new HashSet<string>();
                     foreach (var entry in originalMissing) originalMissingKeys.Add(entry.Key);
                     var lost = new List<MissingBlendShapeInfo>();
+                    var gone = new List<MissingBlendShapeInfo>();
                     foreach (var entry in cloneMissing)
                     {
-                        if (!originalMissingKeys.Contains(entry.Key)) lost.Add(entry);
+                        if (originalMissingKeys.Contains(entry.Key)) continue;
+                        lost.Add(entry);
+                        if (!entry.ExistsElsewhere) gone.Add(entry);
                     }
                     if (lost.Count == 0) return clone;
 
                     var resolvable = totalUnique - originalMissing.Count;
-                    Debug.Log($"{LogPrefix}NDMF の適用で見つからなくなったシェイプキー: {lost.Count} 個（元のアバターで使えるシェイプキーは {resolvable} 個）");
+                    Debug.Log($"{LogPrefix}NDMF の適用で見つからなくなったシェイプキー: {lost.Count} 個（うち、複製のどこにも無いもの {gone.Count} 個。元のアバターで使えるシェイプキーは {resolvable} 個）");
                     LogMissingBlendShapes(clone, clips);
 
-                    if (resolvable > 0 && lost.Count >= resolvable)
+                    if (resolvable > 0 && gone.Count >= resolvable)
                     {
                         Debug.LogWarning(LogPrefix + "NDMF の適用後は表情のシェイプキーが全て見つからなくなるため、NDMF を適用せずに撮影します");
                         message = "NDMF の適用後は表情のシェイプキーが全て見つからなかったため、NDMF を適用せずに撮影しました。";
@@ -94,6 +102,8 @@ namespace yulEmo
         /// </summary>
         private static void ProcessWithNDMF(GameObject avatar)
         {
+            ClearEmptyBlueprintId(avatar);
+
             Type processorType = null;
             foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
@@ -156,6 +166,39 @@ namespace yulEmo
             finally
             {
                 logger.logHandler = originalHandler;
+            }
+        }
+
+        /// <summary>
+        /// 複製側の PipelineManager の blueprintId が空文字なら、null に変えておく。
+        /// Modular Avatar の Sync Parameter Sequence は、blueprintId が null のときだけ処理を飛ばす作りで、
+        /// 空文字だと保存先のパスがフォルダ自体（Library/nadena.dev.modular-avatar/AvatarParameterInfo）になり、
+        /// 撮影のたびに UnauthorizedAccessException が出る。実際のビルドでは VRChat SDK が事前に ID を入れるため、
+        /// 空文字のまま NDMF に渡るのは撮影用複製だけ。元のアバターには触らず、複製側だけを書き換える。
+        /// </summary>
+        private static void ClearEmptyBlueprintId(GameObject avatar)
+        {
+            foreach (var component in avatar.GetComponents<Component>())
+            {
+                if (component == null) continue;
+
+                var type = component.GetType();
+                if (type.FullName != "VRC.Core.PipelineManager") continue;
+
+                const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                var field = type.GetField("blueprintId", flags);
+                if (field != null && field.FieldType == typeof(string))
+                {
+                    if (string.IsNullOrEmpty((string)field.GetValue(component))) field.SetValue(component, null);
+                    return;
+                }
+
+                var property = type.GetProperty("blueprintId", flags);
+                if (property != null && property.PropertyType == typeof(string) && property.CanWrite)
+                {
+                    if (string.IsNullOrEmpty((string)property.GetValue(component, null))) property.SetValue(component, null, null);
+                }
+                return;
             }
         }
 
@@ -426,6 +469,52 @@ namespace yulEmo
         }
 
         /// <summary>
+        /// 設定（Preferences の「21Emo」→「撮影から除外する NDMF コンポーネント」）に挙げられたコンポーネントを、
+        /// 複製から外す（NDMF の適用前に呼ぶ）。型の完全名で一致させ、名前空間を含まない指定は型の名前だけで一致させる。
+        /// 外した種類と数は Console に出す。
+        /// </summary>
+        private static void StripUserExcludedComponents(GameObject root)
+        {
+            var entries = yulEmoPreferences.ExcludedNdmfComponentTypes;
+            if (entries == null || entries.Length == 0) return;
+
+            var fullNames = new HashSet<string>(StringComparer.Ordinal);
+            var simpleNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var entry in entries)
+            {
+                if (entry.IndexOf('.') >= 0) fullNames.Add(entry);
+                else simpleNames.Add(entry);
+            }
+            if (fullNames.Count == 0 && simpleNames.Count == 0) return;
+
+            var removed = new Dictionary<string, int>();
+            foreach (var component in root.GetComponentsInChildren<Component>(true))
+            {
+                if (component == null) continue;
+
+                var type = component.GetType();
+                var fullName = type.FullName ?? type.Name;
+                if (!fullNames.Contains(fullName) && !simpleNames.Contains(type.Name)) continue;
+
+                try
+                {
+                    UnityEngine.Object.DestroyImmediate(component);
+                    removed.TryGetValue(fullName, out var count);
+                    removed[fullName] = count + 1;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"{LogPrefix}設定で除外されたコンポーネントを外せませんでした（{fullName}）: {e.Message}");
+                }
+            }
+
+            foreach (var pair in removed)
+            {
+                Debug.Log($"{LogPrefix}複製から、設定で除外されたコンポーネントを外しました: {pair.Key} x{pair.Value}");
+            }
+        }
+
+        /// <summary>
         /// NDMF の適用後に見つからなかったシェイプキーと、複製に残っているシェイプキーの数を Console に出す（原因調べ用）。
         /// 見つからないものだけを、理由（パス先のレンダラーが無い／メッシュが無い／そのレンダラーにシェイプキーが無い）と一緒に出す。
         /// 同じ名前のシェイプキーが複製の中の別のレンダラーに残っている場合は、その場所も出す。
@@ -461,6 +550,9 @@ namespace yulEmo
             public string Key;
             public string ShapeName;
             public string Line;
+
+            // パス先では見つからないが、同じ名前のシェイプキーが別のレンダラーにはある（メッシュ統合などで移った）場合に true
+            public bool ExistsElsewhere;
         }
 
         /// <summary>
@@ -556,6 +648,7 @@ namespace yulEmo
                         Key = binding.path + "|" + binding.propertyName,
                         ShapeName = shapeName,
                         Line = $"見つからないシェイプキー: path = '{binding.path}', property = '{binding.propertyName}', 理由 = {reason}{hint}",
+                        ExistsElsewhere = elsewhere.Count > 0,
                     });
                 }
             }

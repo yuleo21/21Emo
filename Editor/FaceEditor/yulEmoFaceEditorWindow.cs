@@ -13,7 +13,7 @@ namespace yulEmo
     /// <summary>
     /// 顔のプレビューを見ながらシェイプキーを選び、1 フレームの .anim として書き出すウィンドウ。
     ///
-    /// ・左の一覧のシェイプキーにマウスを乗せると、プレビューに 100 で一時的に反映する。
+    /// ・左の一覧のシェイプキーにマウスオーバーすると、プレビューに 100 で一時的に反映する。
     /// ・クリックすると編集リストに 100 で追加され、スライダーで 0〜100 に調整できる。
     /// ・「書き出す」で、編集リストの値をキー 1 つのクリップにして保存する。
     ///
@@ -21,7 +21,8 @@ namespace yulEmo
     /// 専用のカメラは親を持たない普通のカメラなので、Scene ビューと同じように NDMF Preview が効く（NDMF の ProxyManager が対象にする）。
     /// 本物のアバターには触らない。表情は、NDMF Preview が描画する「プレビュー用のコピー」にだけ、フィルター（yulEmoFacePreviewFilter）で設定する。
     ///
-    /// プレビュー上の操作:  左ドラッグ = 回転 / 右・中ドラッグ = 平行移動 / ホイール = 拡大・縮小
+    /// プレビュー上の操作:  左ドラッグ = 回転 / 右・中ドラッグ = 平行移動 / ホイール = 拡大・縮小 /
+    /// クリック（動かさずに離す）= その位置の頂点を動かすシェイプキーに絞り込む
     /// </summary>
     public partial class yulEmoFaceEditorWindow : EditorWindow
     {
@@ -83,6 +84,11 @@ namespace yulEmo
 
         private int _hoverShape = -1;
         private int _hoverCandidate = -1;
+
+        // プレビューのクリック位置による絞り込み。対象のメッシュと、該当するシェイプキーの番号の集まり
+        private RendererInfo _pickRenderer;
+        private HashSet<int> _pickShapes;
+        private int _pickVersion;
 
         private readonly List<RendererInfo> _infos = new List<RendererInfo>();
         // _infos を調査したときのアバター。Undo でアバターが戻ったかどうかの判定に使う
@@ -272,6 +278,16 @@ namespace yulEmo
             _dirty = true;
         }
 
+        /// <summary>クリック位置による絞り込みを解除する。</summary>
+        private void ClearPick()
+        {
+            if (_pickShapes == null && _pickRenderer == null) return;
+            _pickShapes = null;
+            _pickRenderer = null;
+            _pickHighlight.Clear();
+            _pickVersion++;
+        }
+
         private void DrawShapeList(Event e)
         {
             EditorGUILayout.LabelField("シェイプキー", EditorStyles.boldLabel);
@@ -285,6 +301,7 @@ namespace yulEmo
             // 対象のメッシュ
             var labels = new string[_infos.Count];
             for (var i = 0; i < _infos.Count; i++) labels[i] = _infos[i].Path;
+            var prevRendererIndex = _rendererIndex;
             EditorGUI.BeginChangeCheck();
             _rendererIndex = Mathf.Clamp(EditorGUILayout.Popup("メッシュ", _rendererIndex, labels), 0, _infos.Count - 1);
             _search = EditorGUILayout.TextField(
@@ -301,6 +318,8 @@ namespace yulEmo
             {
                 _listScroll = Vector2.zero;
                 ClearHover();
+                // 対象のメッシュが変わったら、クリック位置の絞り込みは意味を失うので解除する
+                if (_rendererIndex != prevRendererIndex) ClearPick();
             }
 
             var info = _infos[_rendererIndex];
@@ -382,6 +401,20 @@ namespace yulEmo
                     ClearHover();
                 }
             }
+
+            if (_pickShapes != null)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField($"クリックした位置を動かす {_pickShapes.Count} 個に絞り込み中", EditorStyles.miniLabel);
+                    if (GUILayout.Button("解除", EditorStyles.miniButton, GUILayout.Width(48f)))
+                    {
+                        ClearPick();
+                        _listScroll = Vector2.zero;
+                        ClearHover();
+                    }
+                }
+            }
         }
 
         /// <summary>MaskField の結果を、隠す分類の一覧に反映する（「すべて表示」は -1 で返る）。</summary>
@@ -428,6 +461,7 @@ namespace yulEmo
 
             if (_query.HasInvalidPattern) note += "　（正規表現として読めない語は、文字どおりに探しました）";
             if (_query.HasTimedOutPattern) note += "　（重い正規表現のため、一部の語の照合を打ち切りました）";
+            if (_pickShapes != null) note += "　（クリックした位置で絞り込み中）";
 
             _visibleCacheInfo = info;
             _visibleCacheKey = key;
@@ -446,7 +480,7 @@ namespace yulEmo
                 entriesHash = entriesHash * 31 + (entry.Path ?? string.Empty).GetHashCode();
                 entriesHash = entriesHash * 31 + (entry.ShapeName ?? string.Empty).GetHashCode();
             }
-            return string.Join("|", _search, _onlyEditing, string.Join(",", _hiddenGroups), entriesHash);
+            return string.Join("|", _search, _onlyEditing, string.Join(",", _hiddenGroups), entriesHash, _pickVersion);
         }
 
         private List<int> CollectShapes(RendererInfo info, bool includeHiddenGroups)
@@ -457,6 +491,7 @@ namespace yulEmo
                 if (info.Meta.IsSeparator[i]) continue;
                 if (!includeHiddenGroups && _hiddenGroups.Contains(info.Meta.Group[i])) continue;
                 if (_onlyEditing && FindEntry(info.Path, info.Names[i]) == null) continue;
+                if (_pickShapes != null && info == _pickRenderer && !_pickShapes.Contains(i)) continue;
 
                 var score = 0;
                 if (!_query.IsEmpty && !_query.Matches(info.Targets[i], out score)) continue;
@@ -690,6 +725,7 @@ namespace yulEmo
             _state.Weights = new Dictionary<Renderer, KeyValuePair<string, float>[]>();
             _infos.Clear();
             _movedCache.Clear();
+            ClearPick();
             _avatarRoot = null;
 
             if (_avatar == null)

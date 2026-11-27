@@ -56,7 +56,7 @@ namespace yulEmo
 
         /// <summary>
         /// アバターに Modular Avatar のコンポーネント一式をセットアップする。
-        /// 既に "21Emo" オブジェクトがアバター直下にある場合は作り直す（Undo 可能）。
+        /// 既に "21Emo" オブジェクトがアバター直下にある場合は、そのオブジェクトを残して設定だけ更新する（Undo 可能）。
         /// </summary>
         /// <param name="avatarObject">VRCAvatarDescriptor を持つ（または親/子に持つ）シーン上のアバター。</param>
         /// <param name="controller">Merge Animator に設定するコントローラー。</param>
@@ -101,42 +101,36 @@ namespace yulEmo
             Undo.SetCurrentGroupName("21Emo: Modular Avatar セットアップ");
             var undoGroup = Undo.GetCurrentGroup();
 
-            // 既存の 21Emo オブジェクトがあれば作り直す
-            // 作り直す前に、NDMF 設定コンポーネントのユーザー設定（ビルド時撮影・クリップ差し替え）を控えて引き継ぐ
+            // 既存の 21Emo オブジェクトがあれば、その GameObject は残して設定だけ更新する
+            // （ルートに手で追加したコンポーネントを消さないため）。なければ新規に作る
             var existing = avatarRoot.transform.Find(RootObjectName);
-            var keptRecapture = false;
-            var keptFlatten = false;
-            var keptCaptureWithNDMF = setupOptions != null ? setupOptions.CaptureWithNDMF : true;
-            List<yulEmoNDMFComponent.ClipSwap> keptSwaps = null;
-            if (existing != null)
+            var updating = existing != null;
+            GameObject root;
+            if (updating)
             {
-                var oldComponent = existing.GetComponent<yulEmoNDMFComponent>();
-                if (oldComponent != null)
-                {
-                    keptRecapture = oldComponent.recaptureOnBuild;
-                    keptFlatten = oldComponent.flattenToZeroFrame;
-                    keptCaptureWithNDMF = oldComponent.captureWithNDMF;
-                    keptSwaps = new List<yulEmoNDMFComponent.ClipSwap>();
-                    foreach (var swap in oldComponent.clipSwaps)
-                    {
-                        if (swap == null) continue;
-                        keptSwaps.Add(new yulEmoNDMFComponent.ClipSwap { source = swap.source, replacement = swap.replacement });
-                    }
-                }
-                Undo.DestroyObjectImmediate(existing.gameObject);
+                root = existing.gameObject;
+            }
+            else
+            {
+                root = new GameObject(RootObjectName);
+                Undo.RegisterCreatedObjectUndo(root, "Create 21Emo");
+                root.transform.SetParent(avatarRoot.transform, false);
             }
 
-            var root = new GameObject(RootObjectName);
-            Undo.RegisterCreatedObjectUndo(root, "Create 21Emo");
-            root.transform.SetParent(avatarRoot.transform, false);
-
-            // ── 21Emo Settings コンポーネント（インスペクターの一番上に並べるため、最初に追加する） ─────────────────
+            // ── 21Emo Settings コンポーネント（インスペクターの一番上に並べるため、新規作成時は最初に追加する） ──
             // アイコンの撮影し直し・ビルド時の撮影・クリップの差し替えを担当する。
-            var settingsComponent = Undo.AddComponent<yulEmoNDMFComponent>(root);
-            settingsComponent.recaptureOnBuild = keptRecapture;
-            settingsComponent.flattenToZeroFrame = keptFlatten;
-            settingsComponent.captureWithNDMF = keptCaptureWithNDMF;
-            if (keptSwaps != null) settingsComponent.clipSwaps = keptSwaps;
+            // 既存のコンポーネントが残っている場合は、ユーザー設定（ビルド時撮影・クリップ差し替え）は
+            // そのまま使い、スナップショットやカメラ設定など、作成時の設定だけ新しい値で更新する
+            var settingsComponent = root.GetComponent<yulEmoNDMFComponent>();
+            if (settingsComponent == null)
+            {
+                settingsComponent = Undo.AddComponent<yulEmoNDMFComponent>(root);
+                settingsComponent.captureWithNDMF = setupOptions != null ? setupOptions.CaptureWithNDMF : true;
+            }
+            else
+            {
+                Undo.RecordObject(settingsComponent, "21Emo: 設定の更新");
+            }
             if (setupOptions != null && setupOptions.Snapshot != null)
             {
                 settingsComponent.settings = setupOptions.Snapshot;
@@ -157,22 +151,50 @@ namespace yulEmo
             // （ジェスチャ表情メニューを使うときは、先頭がジェスチャ表情で、その後ろが FaceFix のスロット 1〜8）
             var gestureFaceEntries = yulEmoGenerator.GetGestureFaceEntries(config);
             settingsComponent.faceFixClips = yulEmoGenerator.GetFixClipSlots(config);
+            if (updating) EditorUtility.SetDirty(settingsComponent);
 
             // ── MA Merge Animator ─────────────────────────────
             // クリップのバインディングはアバタールート基準なので Absolute。
             // WD は UI で選択した値をそのまま使うため、Match Avatar Write Defaults は OFF。
-            var merge = Undo.AddComponent<ModularAvatarMergeAnimator>(root);
+            // 既存のコンポーネントがある場合は、コントローラーだけ差し替える
+            var merge = root.GetComponent<ModularAvatarMergeAnimator>();
+            if (merge == null)
+            {
+                merge = Undo.AddComponent<ModularAvatarMergeAnimator>(root);
+                merge.layerType = VRCAvatarDescriptor.AnimLayerType.FX;
+                merge.deleteAttachedAnimator = false;
+                merge.pathMode = MergeAnimatorPathMode.Absolute;
+                merge.matchAvatarWriteDefaults = false;
+                merge.layerPriority = 0;
+            }
+            else
+            {
+                Undo.RecordObject(merge, "21Emo: Merge Animator の更新");
+            }
             merge.animator = controller;
-            merge.layerType = VRCAvatarDescriptor.AnimLayerType.FX;
-            merge.deleteAttachedAnimator = false;
-            merge.pathMode = MergeAnimatorPathMode.Absolute;
-            merge.matchAvatarWriteDefaults = false;
-            merge.layerPriority = 0;
+            if (updating) EditorUtility.SetDirty(merge);
 
             // ── MA Parameters ─────────────────────────────────
             // FaceFix / FaceLock を明示的に宣言（型を確実に Int / Bool にするため）。
             // 他プレイヤーからも見えるよう同期する。保存はしない（アバター変更で 0 に戻す）。
-            var parameters = Undo.AddComponent<ModularAvatarParameters>(root);
+            var parameters = root.GetComponent<ModularAvatarParameters>();
+            if (parameters == null)
+            {
+                parameters = Undo.AddComponent<ModularAvatarParameters>(root);
+            }
+            else
+            {
+                // パラメータ一覧は設定に依存するため、既存のものは消してから作り直す
+                Undo.RecordObject(parameters, "21Emo: パラメータの更新");
+                if (parameters.parameters == null)
+                {
+                    parameters.parameters = new List<ParameterConfig>();
+                }
+                else
+                {
+                    parameters.parameters.Clear();
+                }
+            }
             parameters.parameters.Add(new ParameterConfig
             {
                 nameOrPrefix = FaceLockParameter,
@@ -209,20 +231,40 @@ namespace yulEmo
                 });
             }
 
+
+            if (updating) EditorUtility.SetDirty(parameters);
+
             // ── MA Menu Installer + サブメニュー (MA Menu Item) ──
             // 同じオブジェクトに Installer と SubMenu 型の Menu Item を置くと、
             // その Menu Item 自体がルートメニューにインストールされる。
-            Undo.AddComponent<ModularAvatarMenuInstaller>(root);
-
-            var subMenu = Undo.AddComponent<ModularAvatarMenuItem>(root);
-            subMenu.Control = new VRCExpressionsMenu.Control
+            if (root.GetComponent<ModularAvatarMenuInstaller>() == null)
             {
-                name = RootObjectName,
-                type = VRCExpressionsMenu.Control.ControlType.SubMenu,
-                parameter = new VRCExpressionsMenu.Control.Parameter { name = string.Empty },
-            };
-            subMenu.MenuSource = SubmenuSource.Children;
-            subMenu.automaticValue = false;
+                Undo.AddComponent<ModularAvatarMenuInstaller>(root);
+            }
+
+            // ルートの SubMenu は、既存のものがあればそのまま使う（表示名などの変更を残すため）
+            var subMenu = root.GetComponent<ModularAvatarMenuItem>();
+            if (subMenu == null)
+            {
+                subMenu = Undo.AddComponent<ModularAvatarMenuItem>(root);
+                subMenu.Control = new VRCExpressionsMenu.Control
+                {
+                    name = RootObjectName,
+                    type = VRCExpressionsMenu.Control.ControlType.SubMenu,
+                    parameter = new VRCExpressionsMenu.Control.Parameter { name = string.Empty },
+                };
+                subMenu.MenuSource = SubmenuSource.Children;
+                subMenu.automaticValue = false;
+            }
+
+            // ── 子のメニュー用オブジェクト ───────────────────
+            // メニュー構成は設定に依存するため、更新時は既存の子をすべて消してから作り直す
+            if (updating)
+            {
+                var children = new List<Transform>();
+                foreach (Transform child in root.transform) children.Add(child);
+                foreach (var child in children) Undo.DestroyObjectImmediate(child.gameObject);
+            }
 
             // ── プリセットのトグル (FacePreset) ───────────────
             // Lock より手前に並べるため、Lock より先に作る（子オブジェクトの順番 = メニューの順番）。

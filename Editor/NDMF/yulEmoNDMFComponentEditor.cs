@@ -185,15 +185,20 @@ namespace yulEmo
 
             var settings = yulEmoCameraSettings.FromComponent(component);
 
-            var icons = yulEmoIconCapturer.CaptureFaceFixIcons(
-                avatar, clips, component.iconFolder, settings, component.captureWithNDMF, out var message);
-            yulEmoModularAvatarSetup.ApplyFaceFixIcons(component.transform, icons, true);
+            // 高速モード（NDMF Preview）のときは撮影の完了が後になるため、続きは完了時に行う
+            yulEmoIconCapturer.CaptureFaceFixIconsAsync(
+                avatar, clips, component.iconFolder, settings, component.captureWithNDMF,
+                (icons, message) =>
+                {
+                    if (component == null) return;
+                    yulEmoModularAvatarSetup.ApplyFaceFixIcons(component.transform, icons, true);
 
-            if (avatar.scene.IsValid())
-            {
-                UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(avatar.scene);
-            }
-            EditorUtility.DisplayDialog("21Emo", message ?? "アイコンを撮影し直しました。", "OK");
+                    if (avatar != null && avatar.scene.IsValid())
+                    {
+                        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(avatar.scene);
+                    }
+                    EditorUtility.DisplayDialog("21Emo", message ?? "アイコンを撮影し直しました。", "OK");
+                });
         }
     }
 }

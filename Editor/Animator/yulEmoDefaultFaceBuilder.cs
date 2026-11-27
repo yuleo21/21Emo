@@ -13,9 +13,12 @@ namespace yulEmo
     /// 21Facial の直前に「全シェイプキーをデフォルト値に戻し続ける」レイヤーを置くことで、
     /// 元の表情レイヤーが動かしたシェイプキーを毎フレーム上書きして打ち消す。
     ///
-    /// 対象は次のクリップに含まれる SkinnedMeshRenderer の blendShape.* カーブ:
+    /// 対象は、次のクリップに blendShape.* カーブが現れる SkinnedMeshRenderer の全ブレンドシェイプ:
     ///   - アバターの元の表情レイヤーが使っているクリップ
     ///   - 21Emo で設定したクリップ（Idle / ジェスチャー / FaceFix）
+    /// クリップに含まれるシェイプキーだけでは、元の表情管理が別の経路で動かすシェイプキーを
+    /// 書き漏らして打ち消せないため、レンダラー単位で全てを対象にする。
+    /// デフォルト値は、生成時点のアバターのシェイプキーの値（GetBlendShapeWeight）を使う。
     /// </summary>
     public static class yulEmoDefaultFaceBuilder
     {
@@ -37,9 +40,10 @@ namespace yulEmo
                 ? CollectLipSyncAndBlinkShapes(descriptor)
                 : new HashSet<(string, string)>();
 
+            // クリップに blendShape.* カーブが現れるレンダラーを集める
             var seenClips = new HashSet<AnimationClip>();
-            var seenBindings = new HashSet<(string, string)>();
-            var meshCache = new Dictionary<string, SkinnedMeshRenderer>();
+            var paths = new List<string>();
+            var seenPaths = new HashSet<string>();
 
             foreach (var clip in clips)
             {
@@ -49,27 +53,27 @@ namespace yulEmo
                 {
                     if (binding.type != typeof(SkinnedMeshRenderer)) continue;
                     if (!binding.propertyName.StartsWith(BlendShapePrefix)) continue;
+                    if (seenPaths.Add(binding.path)) paths.Add(binding.path);
+                }
+            }
 
-                    var key = (binding.path, binding.propertyName);
-                    if (excluded.Contains(key)) continue;
-                    if (!seenBindings.Add(key)) continue;
+            // 集めたレンダラーの全ブレンドシェイプを、現在の値で対象にする
+            foreach (var path in paths)
+            {
+                var target = root.Find(path);
+                var mesh = target != null ? target.GetComponent<SkinnedMeshRenderer>() : null;
+                if (mesh == null || mesh.sharedMesh == null) continue;
 
-                    if (!meshCache.TryGetValue(binding.path, out var mesh))
-                    {
-                        var target = root.Find(binding.path);
-                        mesh = target != null ? target.GetComponent<SkinnedMeshRenderer>() : null;
-                        meshCache[binding.path] = mesh;
-                    }
-                    if (mesh == null || mesh.sharedMesh == null) continue;
-
-                    var shapeName = binding.propertyName.Substring(BlendShapePrefix.Length);
-                    var index = mesh.sharedMesh.GetBlendShapeIndex(shapeName);
-                    if (index < 0) continue;
+                var sharedMesh = mesh.sharedMesh;
+                for (var i = 0; i < sharedMesh.blendShapeCount; i++)
+                {
+                    var propertyName = BlendShapePrefix + sharedMesh.GetBlendShapeName(i);
+                    if (excluded.Contains((path, propertyName))) continue;
 
                     result.Add(new yulEmoGenerator.DefaultFaceBinding(
-                        binding.path,
-                        binding.propertyName,
-                        mesh.GetBlendShapeWeight(index)));
+                        path,
+                        propertyName,
+                        mesh.GetBlendShapeWeight(i)));
                 }
             }
 

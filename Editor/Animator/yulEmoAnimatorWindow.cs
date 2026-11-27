@@ -71,7 +71,7 @@ namespace yulEmo
         // ジェスチャー表情ステートで Eyes & Eyelids を Animation にする (VRCAnimatorTrackingControl)
         [SerializeField] private bool _useTrackingControl = true;
 
-        // Idle を経由せず、Any State から各表情へ直接遷移する
+        // Idle を経由せず、Entry から各表情へ直接遷移する
         [SerializeField] private bool _skipIdle;
 
         // 表情クリップを「最終フレームだけの 0 フレームアニメーション」に差し替えて使う
@@ -199,15 +199,13 @@ namespace yulEmo
                         _lastLoadedAvatar = _avatarObject;
                     }
                     var emo = droppedEmo;
-                    EditorApplication.delayCall += () => LoadFromEmoObject(emo, true);
+                    EditorApplication.delayCall += () => LoadFromyulEmoObject(emo, true);
                 }
                 else
                 {
+                    // ただのアバターが渡されたときは、欄に入れるだけで自動では読み込まない。
+                    // 読み込みは「読み込む」ボタンを押したときだけ行う
                     _avatarObject = newAvatar;
-                    if (_avatarObject != null && _avatarObject != _lastLoadedAvatar)
-                    {
-                        LoadFromAvatar(_avatarObject, showSuccessDialog: true);
-                    }
                 }
             }
 
@@ -230,7 +228,7 @@ namespace yulEmo
                         "「21Emo」オブジェクトやそのプレハブを、上のアバター欄にドラッグ＆ドロップしても読み込めます。")))
                 {
                     var emo = existingEmo;
-                    EditorApplication.delayCall += () => LoadFromEmoObject(emo, true);
+                    EditorApplication.delayCall += () => LoadFromyulEmoObject(emo, true);
                 }
             }
         }
@@ -309,10 +307,11 @@ namespace yulEmo
 
             _skipIdle = EditorGUILayout.ToggleLeft(
                 new GUIContent(
-                    "Idle を挟まずに表情を切り替える（Any State から直接遷移）",
+                    "Idle を挟まずに表情を切り替える（Entry から直接遷移）",
                     "オフ（標準）: Entry → Idle → 各表情 → Exit（→ Idle）\n" +
-                    "オン: 各表情へ Any State から直接遷移します。ある表情から別の表情へ、Idle を経由せずに切り替わります。\n" +
+                    "オン: 各ジェスチャー表情へ Entry から直接遷移します。ある表情から別の表情へ、Idle を経由せずに切り替わります。\n" +
                     "・何も押していないとき（ジェスチャー 0）は Exit → Idle に戻ります。\n" +
+                    "・FaceFix は Any State からの遷移のままです（ジェスチャーの途中でも切り替わります）。\n" +
                     "・FaceFix で使っている値のときは、ジェスチャー表情へ遷移しません（FaceFix が優先されます）。\n" +
                     "・Both のとき左右のジェスチャーが同時に出たら、左が優先されます（単一レイヤーでは同時に 1 つの表情しか持てないため）。\n" +
                     "・FaceLock / 無効化ルール / FacePreset の条件は標準と同じように働きます。"),
@@ -959,7 +958,7 @@ namespace yulEmo
         /// 作成時の設定が保存されていればそれを使い、無い（古いバージョンで作成した）ときは、
         /// コントローラーとメニューから読み取れる範囲を読み込む。
         /// </summary>
-        private void LoadFromEmoObject(yulEmoNDMFComponent component, bool showDialog)
+        private void LoadFromyulEmoObject(yulEmoNDMFComponent component, bool showDialog)
         {
             if (component == null) return;
 
@@ -1183,8 +1182,8 @@ namespace yulEmo
                 : $"{avatarName}_21Facial_{stamp}";
         }
 
-        /// <summary>アバター直下に、セットアップ済みの「21Emo」オブジェクトがあるか（TrySetup が作り直す対象と同じ判定）。</summary>
-        private static bool HasExistingEmoObject(GameObject avatar)
+        /// <summary>アバター直下に、セットアップ済みの「21Emo」オブジェクトがあるか（TrySetup が更新する対象と同じ判定）。</summary>
+        private static bool HasExistingyulEmoObject(GameObject avatar)
         {
             if (avatar == null) return false;
 
@@ -1206,19 +1205,19 @@ namespace yulEmo
                 return;
             }
 
-            // 既にアバターに「21Emo」オブジェクトがある場合は、作り直す（上書きする）前に確認する。
+            // 既にアバターに「21Emo」オブジェクトがある場合は、更新する前に確認する。
             // コントローラーを作る前に聞くので、キャンセルしても何も変更されない。
-            if (_setupModularAvatar && _avatarObject != null && HasExistingEmoObject(_avatarObject))
+            if (_setupModularAvatar && _avatarObject != null && HasExistingyulEmoObject(_avatarObject))
             {
-                var overwriteEmo = EditorUtility.DisplayDialog(
+                var updateEmo = EditorUtility.DisplayDialog(
                     "21Emo",
                     $"このアバターには既に「{yulEmoModularAvatarSetup.RootObjectName}」オブジェクトがあります。\n" +
-                    "上書きすると、「21Emo」オブジェクトを削除して作り直します。\n" +
-                    "（手で追加したコンポーネントやメニューの変更、手動で設定したアイコンは失われます。Undo で元に戻せます）\n\n" +
-                    "上書きしますか？",
-                    "上書きする",
+                    "更新すると、コントローラーを差し替えて、パラメータとメニュー項目を作り直します。\n" +
+                    "（「21Emo」オブジェクト自体と、手で追加したコンポーネントは残ります。子メニューへの変更や手動で設定したアイコンは失われます。Undo で元に戻せます）\n\n" +
+                    "更新しますか？",
+                    "更新する",
                     "キャンセル");
-                if (!overwriteEmo) return;
+                if (!updateEmo) return;
             }
 
             // コントローラー名の検証は、削除や生成より前に済ませる
@@ -1329,9 +1328,22 @@ namespace yulEmo
                     {
                         var iconFolder = iconFolderPath;
                         yulEmoEditorUtility.EnsureFolder(iconFolder);
-                        var icons = yulEmoIconCapturer.CaptureFaceFixIcons(
-                            _avatarObject, iconClips, iconFolder, yulEmoCameraSettings.Current, _captureWithNDMF, out iconMessage);
-                        yulEmoModularAvatarSetup.ApplyFaceFixIcons(_avatarObject, icons);
+                        // 高速モード（NDMF Preview）のときは撮影の完了が後になるため、続きは完了時に行う
+                        var avatarObject = _avatarObject;
+                        var baseDialogMessage = dialogMessage;
+                        yulEmoIconCapturer.CaptureFaceFixIconsAsync(
+                            avatarObject, iconClips, iconFolder, yulEmoCameraSettings.Current, _captureWithNDMF,
+                            (icons, message) =>
+                            {
+                                yulEmoModularAvatarSetup.ApplyFaceFixIcons(avatarObject, icons);
+                                var finalDialogMessage = baseDialogMessage;
+                                if (!string.IsNullOrEmpty(message))
+                                {
+                                    finalDialogMessage += $"\n\n※ {message}";
+                                }
+                                EditorUtility.DisplayDialog("21Emo", finalDialogMessage, "OK");
+                            });
+                        return;
                     }
                     else if (_captureFaceFixIcons)
                     {

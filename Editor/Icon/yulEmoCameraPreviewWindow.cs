@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
+using nadena.dev.ndmf.preview;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -12,7 +13,9 @@ namespace yulEmo
     /// <summary>
     /// アイコン撮影のカメラ位置（左右・上下・前後・画角）をプレビューしながら調整するウィンドウ。
     ///
-    /// アバターを複製して専用のプレビューシーンに置き、表情は変えずにカメラだけを動かして表示する。
+    /// 標準では、アバターを複製して専用のプレビューシーンに置き、表情は変えずにカメラだけを動かして表示する。
+    /// 「NDMF を適用した状態で表示する」がオンのときは、NDMF Preview で元のアバターを表示する
+    /// （複製への全適用はしない。Preview が使えない・描画されないときは、複製に NDMF を適用する従来の表示に切り替える）。
     /// カメラの置き方は yulEmoIconCapturer.ConfigureCamera を撮影と共用しているので、
     /// ここで見えている構図がそのままアイコンの構図になる。
     /// 値は yulEmoCameraSettings.Current に保存され、21Emo 本体の撮影で使われる。
@@ -43,6 +46,17 @@ namespace yulEmo
         private Vector3 _viewPosition;
         private bool _useDirectDraw;
 
+        // NDMF Preview で表示しているときの状態（_root は元のアバター、複製は作らない）
+        private GameObject _root;
+        private PreviewSession _session;
+        private PreviewSession _sessionParent;
+        private bool _previewMode;
+        private bool _previewConfirmed;
+        private int _previewBlankFrames;
+        private double _lastPreviewRender;
+        private bool _forceBuildOnce;
+        private string _fallbackNote;
+
         [MenuItem("21tools/21Emo カメラプレビュー")]
         public static void Open()
         {
@@ -64,17 +78,41 @@ namespace yulEmo
 
         private void OnEnable()
         {
+            EditorApplication.update += OnEditorUpdate;
             QueueRebuild();
         }
 
         private void OnDisable()
         {
+            EditorApplication.update -= OnEditorUpdate;
+
             // 閉じた後に保留中の Rebuild が走らないよう、登録した delayCall はここで外す
             // 閉じた後にプレビュー用のシーンや複製が作られると、解放する側がもういないため
             EditorApplication.delayCall -= Rebuild;
             _rebuildQueued = false;
 
             Teardown();
+        }
+
+        /// <summary>
+        /// NDMF Preview で表示中は、アバター側の変更をそのまま反映するため、定期的に描き直す。
+        /// 親セッションが差し替わったとき（NDMF Preview の有効/無効が切り替わったとき）は作り直す。
+        /// </summary>
+        private void OnEditorUpdate()
+        {
+            if (!_previewMode || _cam == null) return;
+
+            if (PreviewSession.Current != _sessionParent)
+            {
+                QueueRebuild();
+                return;
+            }
+
+            var now = EditorApplication.timeSinceStartup;
+            if (now - _lastPreviewRender < 0.1) return;
+            _lastPreviewRender = now;
+            _dirty = true;
+            Repaint();
         }
 
         private void QueueRebuild()
@@ -94,8 +132,9 @@ namespace yulEmo
             _avatar = (GameObject)EditorGUILayout.ObjectField("アバター", _avatar, typeof(GameObject), true);
             _applyNDMF = EditorGUILayout.ToggleLeft(
                 new GUIContent(
-                    "NDMF を適用した状態で表示する（時間がかかります）",
-                    "撮影用の複製に NDMF の全プラグインを適用します。衣装の切り替えなどがビルド後と同じ見た目になります。\n" +
+                    "NDMF を適用した状態で表示する",
+                    "NDMF Preview で表示します。衣装の切り替えなどがビルド後と同じ見た目になります。\n" +
+                    "プレビューに対応していない処理は表示されません。NDMF Preview が使えないときは、複製に NDMF を適用して表示します（時間がかかります）。\n" +
                     "カメラ位置の確認だけなら、オフのままで構いません。"),
                 _applyNDMF);
             var avatarChanged = EditorGUI.EndChangeCheck();
@@ -174,6 +213,21 @@ namespace yulEmo
                 {
                     RenderPreview(settings);
                     _dirty = false;
+
+                    if (_previewMode && !_previewConfirmed)
+                    {
+                        if (HasAnyDrawnPixel())
+                        {
+                            _previewConfirmed = true;
+                        }
+                        else if (++_previewBlankFrames >= 10)
+                        {
+                            // Preview の準備には数フレームかかるため、約1秒描かれなかった場合だけ切り替える
+                            _fallbackNote = "NDMF Preview では描画されなかったため、通常の方法（NDMF を適用した複製）で表示しています。";
+                            _forceBuildOnce = true;
+                            QueueRebuild();
+                        }
+                    }
                 }
 
                 EditorGUI.DrawRect(rect, BackgroundColor);
@@ -223,7 +277,28 @@ namespace yulEmo
             {
                 string message = null;
                 _viewPosition = descriptor.ViewPosition;
+
+                if (_applyNDMF && !_forceBuildOnce)
+                {
+                    if (TrySetupPreview(descriptor))
+                    {
+                        _previewMode = true;
+                        _previewConfirmed = false;
+                        _previewBlankFrames = 0;
+                        _status = null;
+                        _dirty = true;
+                        Repaint();
+                        return;
+                    }
+                    if (_fallbackNote == null)
+                    {
+                        _fallbackNote = "NDMF Preview が使えないため、通常の方法（NDMF を適用した複製）で表示しています。";
+                    }
+                }
+                _forceBuildOnce = false;
+
                 _clone = yulEmoAvatarCloneBuilder.CreateClone(descriptor.gameObject, _applyNDMF, null, ref message);
+                _root = _clone;
 
                 // 表情は変えず、アニメーションも再生しない
                 foreach (var animator in _clone.GetComponentsInChildren<Animator>(true))
@@ -278,12 +353,16 @@ namespace yulEmo
                     _cam.cullingMask = 1 << yulEmoIconCapturer.DirectDrawLayer;
                 }
 
-                _status = message;
+                _status = _fallbackNote != null
+                    ? _fallbackNote + (string.IsNullOrEmpty(message) ? string.Empty : "\n" + message)
+                    : message;
+                _fallbackNote = null;
             }
             catch (Exception ex)
             {
                 Debug.LogException(ex);
                 Teardown();
+                _fallbackNote = null;
                 _status = "プレビューの準備中にエラーが発生しました。詳細は Console を確認してください。";
             }
 
@@ -291,11 +370,51 @@ namespace yulEmo
             Repaint();
         }
 
+        /// <summary>
+        /// NDMF Preview で元のアバターを表示する準備をする。複製は作らない。
+        /// NDMF Preview が使えないときは false を返し、呼び出し側が複製に NDMF を適用する従来の表示に切り替える。
+        /// </summary>
+        private bool TrySetupPreview(VRCAvatarDescriptor descriptor)
+        {
+            var parent = PreviewSession.Current;
+            if (parent == null) return false;
+
+            _sessionParent = parent;
+            _root = descriptor.gameObject;
+            _session = parent.Fork("21Emo Camera Preview");
+
+            _cameraObject = new GameObject("21Emo Preview Camera") { hideFlags = HideFlags.HideAndDontSave };
+            _cam = _cameraObject.AddComponent<Camera>();
+            _cam.enabled = false;
+            _cam.clearFlags = CameraClearFlags.SolidColor;
+            _cam.backgroundColor = BackgroundColor;
+            _cam.cullingMask = ~0;
+            _cam.allowHDR = false;
+            _session.OverrideCamera(_cam);
+
+            yulEmoIconCapturer.ConfigureCamera(_cam, _root, _viewPosition, new yulEmoCameraSettings(), out _baseDistance, out _);
+
+            _lights = new[]
+            {
+                yulEmoIconCapturer.CreateLight(_root.scene, _cam.transform.rotation * Quaternion.Euler(15f, -20f, 0f), 1.0f),
+                yulEmoIconCapturer.CreateLight(_root.scene, _cam.transform.rotation * Quaternion.Euler(-15f, 30f, 0f), 0.5f),
+                yulEmoIconCapturer.CreateLight(_root.scene, _cam.transform.rotation, 0.4f),
+            };
+
+            _renderTexture = new RenderTexture(PreviewSize, PreviewSize, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default)
+            {
+                antiAliasing = 4,
+                hideFlags = HideFlags.HideAndDontSave,
+            };
+            _renderTexture.Create();
+            return true;
+        }
+
         private void RenderPreview(yulEmoCameraSettings settings)
         {
-            if (_cam == null || _clone == null || _renderTexture == null) return;
+            if (_cam == null || _root == null || _renderTexture == null) return;
 
-            yulEmoIconCapturer.ConfigureCamera(_cam, _clone, _viewPosition, settings, out _baseDistance, out _);
+            yulEmoIconCapturer.ConfigureCamera(_cam, _root, _viewPosition, settings, out _baseDistance, out _);
 
             var temporaryMeshes = new List<Mesh>();
             if (_useDirectDraw)
@@ -342,6 +461,17 @@ namespace yulEmo
 
         private void Teardown()
         {
+            if (_session != null)
+            {
+                if (_cam != null) PreviewSession.ClearCameraOverride(_cam);
+                _session.Dispose();
+                _session = null;
+            }
+            _sessionParent = null;
+            _previewMode = false;
+            _previewConfirmed = false;
+            _root = null;
+
             if (_renderTexture != null)
             {
                 _renderTexture.Release();

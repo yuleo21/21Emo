@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using AnimatorAsCode.V1;
+using nadena.dev.modular_avatar.core;
 using UnityEditor;
 using UnityEditor.Animations;
 using UnityEngine;
@@ -60,6 +61,10 @@ namespace yulEmo
     ///     - 各ジェスチャ表情ステート → Exit（条件: FaceFix != value, Duration: 0.1s）
     ///     - 無効化ルールが成立したら Exit（→ Idle）
     ///     - 各ジェスチャ表情ステートに Parameter Driver を付け、FaceLock を False にする
+    ///   MMD ワールド対応:
+    ///     - 21Facial レイヤーのステートマシンに、MA MMD Layer Control（DisableInMMDMode = true）を常時付ける
+    ///     - ビルド時に Modular Avatar がこのレイヤーを MMD 対象として扱い、MMD ワールドではレイヤーごと
+    ///       無効にする。表情はワールド側の MMD 表情に委ねられる。設定項目は無く、常に有効
     /// </summary>
     public static partial class yulEmoGenerator
     {
@@ -321,6 +326,7 @@ namespace yulEmo
 
             // 表情変更を無効にするルール（任意・複数）
             var disableRules = ResolveDisableRules(fx, config.DisableRules);
+
             // 表情変更を無効にするルール（ジェスチャーステートの Exit 条件に追加する）
             var freezeRules = ResolveDisableRules(fx, config.FreezeRules);
 
@@ -392,7 +398,35 @@ namespace yulEmo
                 BuildDefaultFaceLayer(aac, controller, config);
             }
 
+            // MMD ワールド対応として、21Facial に MA MMD Layer Control を付ける（常時）
+            AddMmdLayerControl(controller);
+
             EditorUtility.SetDirty(controller);
+        }
+
+        /// <summary>
+        /// 21Facial レイヤーのステートマシンに、MA MMD Layer Control（DisableInMMDMode = true）を付ける。
+        /// ビルド時に Modular Avatar がこのレイヤーを MMD 対象として扱い、MMD ワールドではレイヤーごと
+        /// 無効にする。既に付いている場合は何もしない。
+        /// </summary>
+        private static void AddMmdLayerControl(AnimatorController controller)
+        {
+            foreach (var layer in controller.layers)
+            {
+                if (layer.name != SystemName) continue;
+                var stateMachine = layer.stateMachine;
+                if (stateMachine == null) return;
+
+                foreach (var behaviour in stateMachine.behaviours)
+                {
+                    if (behaviour is ModularAvatarMMDLayerControl) return;
+                }
+
+                var control = stateMachine.AddStateMachineBehaviour<ModularAvatarMMDLayerControl>();
+                control.DisableInMMDMode = true;
+                EditorUtility.SetDirty(stateMachine);
+                return;
+            }
         }
 
         /// <summary>

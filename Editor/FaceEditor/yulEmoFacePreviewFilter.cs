@@ -22,6 +22,13 @@ namespace yulEmo
             // 参照ごと入れ替えて更新する（OnFrame は毎フレーム、この参照を読むだけ）
             public Dictionary<Renderer, KeyValuePair<string, float>[]> Weights =
                 new Dictionary<Renderer, KeyValuePair<string, float>[]>();
+
+            // アイコン撮影側が「今、撮影用カメラで描いている間」だけ立てる旗と、その間に OnFrame が呼ばれた回数。
+            // NDMF Preview は、用意が終わったパイプラインで描くときにだけ、描画の前に OnFrame を呼ぶ。
+            // そのため、旗が立っている間に OnFrame が呼ばれた描画は「処理済みの姿を描いた」と判断できる。
+            // ノード生成時にも OnFrame が 1 回呼ばれるが、そのときは旗が立っていないので数に入らない
+            public volatile bool InCaptureRender;
+            public int CaptureFrameCount;
         }
 
         private readonly ImmutableList<RenderGroup> _groups;
@@ -73,6 +80,8 @@ namespace yulEmo
 
             public void OnFrame(Renderer original, Renderer proxy)
             {
+                if (_state.InCaptureRender) _state.CaptureFrameCount++;
+
                 if (original == null || proxy == null) return;
                 if (!_state.Weights.TryGetValue(original, out var values)) return;
 

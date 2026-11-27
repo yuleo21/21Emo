@@ -60,6 +60,19 @@ namespace yulEmo
         private bool _ndmfOffNote;
         private readonly Dictionary<(RendererInfo, int), int[]> _movedCache = new Dictionary<(RendererInfo, int), int[]>();
 
+        // クリック位置の絞り込み: 選んだ点と範囲、その周りの頂点（中心から離れるほど薄く描く）
+        private Vector3 _pickPoint;
+        private float _pickRadius;
+        private readonly List<PickHighlightPoint> _pickHighlight = new List<PickHighlightPoint>();
+        private Vector2 _previewMouseDown;
+        private bool _previewMouseDownInRect;
+
+        private struct PickHighlightPoint
+        {
+            public Vector3 Position;
+            public float Alpha;
+        }
+
         // ─────────────────────────────────────────────────────────────
         // プレビューに反映する値
         // 本物のアバターは変えず、値は yulEmoFacePreviewFilter（NDMF Preview のフィルター）を通して、プレビュー用のコピーにだけ設定する。
@@ -83,7 +96,7 @@ namespace yulEmo
             _dirty = false;
             _lastApply = EditorApplication.timeSinceStartup;
 
-            // プレビューに反映する値: 編集リスト + 乗せているシェイプキー（100）
+            // プレビューに反映する値: 編集リスト + マウスオーバー中のシェイプキー（100）
             var perRenderer = new Dictionary<Renderer, List<KeyValuePair<string, float>>>();
             void Add(RendererInfo info, string shapeName, float value)
             {
@@ -157,6 +170,7 @@ namespace yulEmo
             {
                 EditorGUILayout.HelpBox("NDMF のメニューで NDMF Preview が無効になっているため、Modular Avatar などの処理は反映されません。", MessageType.Info);
             }
+            EditorGUILayout.LabelField("プレビューをクリックすると、その位置の頂点を動かすシェイプキーに絞り込みます。", EditorStyles.miniLabel);
 
             var rect = GUILayoutUtility.GetAspectRect(1f);
             if (rect.width < 16f) rect = new Rect(rect.x, rect.y, 16f, 16f);
@@ -183,10 +197,28 @@ namespace yulEmo
             GUI.DrawTexture(rect, _renderTexture, ScaleMode.StretchToFill, false);
             if (_dim) EditorGUI.DrawRect(rect, new Color(0f, 0f, 0f, 0.35f));
             DrawBoxes(rect);
+            DrawPickHighlight(rect);
         }
 
         private void HandlePreviewInput(Event e, Rect rect)
         {
+            // クリック（押して、ほとんど動かさずに離す）は、回転ではなく位置の選択として扱う
+            if (e.type == EventType.MouseDown && e.button == 0 && rect.Contains(e.mousePosition))
+            {
+                _previewMouseDown = e.mousePosition;
+                _previewMouseDownInRect = true;
+            }
+            else if (e.type == EventType.MouseUp && e.button == 0)
+            {
+                var wasDownInRect = _previewMouseDownInRect;
+                _previewMouseDownInRect = false;
+                if (wasDownInRect && rect.Contains(e.mousePosition) &&
+                    (e.mousePosition - _previewMouseDown).sqrMagnitude <= 16f)
+                {
+                    PickAt(e.mousePosition, rect);
+                }
+            }
+
             if (!rect.Contains(e.mousePosition)) return;
 
             if (e.type == EventType.MouseDrag)
@@ -426,6 +458,12 @@ namespace yulEmo
                         dim = false;
                     }
                 }
+
+                // クリックで選んだ点の周りの頂点は、今の形に合わせて集め直す
+                if (_pickShapes != null && _pickRenderer != null && _pickRenderer.Renderer != null)
+                {
+                    if (TryCollectWorldVertices(_pickRenderer, baked, out var world)) RebuildPickHighlight(world);
+                }
             }
             finally
             {
@@ -475,6 +513,218 @@ namespace yulEmo
                 // メッシュが読み取れないときなどは、枠線を出さないだけにする
                 Debug.LogWarning("[21Emo] 動く範囲を計算できませんでした: " + ex.Message);
                 return false;
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // クリック位置による絞り込み
+        // ─────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// プレビューのクリック位置で、メッシュの手前の面に当たった点に一番近い頂点を選び、
+        /// その周りの頂点を動かすシェイプキーに絞り込む。
+        /// 光線と面の交点で選ぶので、奥の頂点を貫通して選ぶことはない。
+        /// どこにも当たらない場所（背景など）のクリックは、絞り込みの解除として扱う。
+        /// </summary>
+        private void PickAt(Vector2 guiPosition, Rect rect)
+        {
+            if (_rendererIndex < 0 || _rendererIndex >= _infos.Count) return;
+            var info = _infos[_rendererIndex];
+            if (info.Renderer == null || info.Renderer.sharedMesh == null) return;
+
+            // 画面の位置から、プレビュー用カメラの光線を作る（RenderPreview のカメラ配置と同じ計算。アスペクトは 1）
+            var viewportX = (guiPosition.x - rect.x) / rect.width;
+            var viewportY = 1f - (guiPosition.y - rect.y) / rect.height;
+            var tan = Mathf.Tan(PreviewFov * 0.5f * Mathf.Deg2Rad);
+            var direction = (_rotation * Vector3.forward
+                + _rotation * Vector3.right * ((viewportX * 2f - 1f) * tan)
+                + _rotation * Vector3.up * ((viewportY * 2f - 1f) * tan)).normalized;
+            var origin = _target - _rotation * Vector3.forward * _distance;
+
+            var mesh = new Mesh();
+            try
+            {
+                info.Renderer.BakeMesh(mesh, true);
+                if (mesh.vertexCount != info.Renderer.sharedMesh.vertexCount) return;
+
+                var vertices = mesh.vertices;
+                var transform = info.Renderer.transform;
+                var matrix = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one);
+                var world = new Vector3[vertices.Length];
+                for (var i = 0; i < vertices.Length; i++) world[i] = matrix.MultiplyPoint3x4(vertices[i]);
+
+                // 光線が当たる一番手前の面を探し、その交点に一番近い頂点を選ぶ
+                if (!TryRaycastMesh(world, mesh.triangles, origin, direction, out var hitPoint))
+                {
+                    ClearPick();
+                    Repaint();
+                    return;
+                }
+
+                var best = -1;
+                var bestSqr = float.MaxValue;
+                for (var i = 0; i < world.Length; i++)
+                {
+                    var sqr = (world[i] - hitPoint).sqrMagnitude;
+                    if (sqr < bestSqr)
+                    {
+                        bestSqr = sqr;
+                        best = i;
+                    }
+                }
+                if (best < 0)
+                {
+                    ClearPick();
+                    Repaint();
+                    return;
+                }
+
+                // 絞り込みの範囲は、メッシュの大きさから決める
+                var radius = Mathf.Max(0.004f, mesh.bounds.extents.magnitude * 0.08f);
+
+                _pickPoint = world[best];
+                _pickRadius = radius;
+                _pickRenderer = info;
+
+                var shapes = new HashSet<int>();
+                for (var shape = 0; shape < info.Names.Length; shape++)
+                {
+                    if (info.Meta.IsSeparator[shape]) continue;
+                    var moved = GetMovedVertices(info, shape);
+                    for (var k = 0; k < moved.Length; k++)
+                    {
+                        if ((world[moved[k]] - _pickPoint).sqrMagnitude <= radius * radius)
+                        {
+                            shapes.Add(shape);
+                            break;
+                        }
+                    }
+                }
+                _pickShapes = shapes;
+                _pickVersion++;
+                RebuildPickHighlight(world);
+                _listScroll = Vector2.zero;
+                ClearHover();
+                Repaint();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[21Emo] クリックした位置の頂点を調べられませんでした: " + ex.Message);
+            }
+            finally
+            {
+                DestroyImmediate(mesh);
+            }
+        }
+
+        /// <summary>
+        /// 光線とメッシュの面との交点のうち、光線の始点に一番近いものを返す。
+        /// 裏向きの面も対象にする（両面表示のマテリアルでも手前として当たるようにするため）。
+        /// </summary>
+        private static bool TryRaycastMesh(Vector3[] world, int[] triangles, Vector3 origin, Vector3 direction, out Vector3 hitPoint)
+        {
+            hitPoint = Vector3.zero;
+            var bestT = float.MaxValue;
+            var found = false;
+
+            for (var t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                var v0 = world[triangles[t]];
+                var edge1 = world[triangles[t + 1]] - v0;
+                var edge2 = world[triangles[t + 2]] - v0;
+
+                var p = Vector3.Cross(direction, edge2);
+                var det = Vector3.Dot(edge1, p);
+                if (Mathf.Abs(det) < 1e-8f) continue;
+                var invDet = 1f / det;
+
+                var s = origin - v0;
+                var u = Vector3.Dot(s, p) * invDet;
+                if (u < 0f || u > 1f) continue;
+
+                var q = Vector3.Cross(s, edge1);
+                var v = Vector3.Dot(direction, q) * invDet;
+                if (v < 0f || u + v > 1f) continue;
+
+                var distance = Vector3.Dot(edge2, q) * invDet;
+                if (distance <= 0f || distance >= bestT) continue;
+
+                bestT = distance;
+                found = true;
+            }
+
+            if (found) hitPoint = origin + direction * bestT;
+            return found;
+        }
+
+        /// <summary>現在の形での、全頂点のワールド座標を返す（TryCollectPoints と同じ変換）。</summary>
+        private bool TryCollectWorldVertices(RendererInfo info, Dictionary<RendererInfo, Mesh> baked, out Vector3[] world)
+        {
+            world = null;
+            try
+            {
+                if (!baked.TryGetValue(info, out var mesh))
+                {
+                    mesh = new Mesh();
+                    info.Renderer.BakeMesh(mesh, true);
+                    baked[info] = mesh;
+                }
+                if (mesh.vertexCount != info.Renderer.sharedMesh.vertexCount) return false;
+
+                var vertices = mesh.vertices;
+                var transform = info.Renderer.transform;
+                var matrix = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one);
+                world = new Vector3[vertices.Length];
+                for (var i = 0; i < vertices.Length; i++) world[i] = matrix.MultiplyPoint3x4(vertices[i]);
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>選んだ点の周りの頂点を集める。中心に近いほど濃く、端ほど薄く描くための濃さも持たせる。</summary>
+        private void RebuildPickHighlight(Vector3[] world)
+        {
+            _pickHighlight.Clear();
+            if (_pickShapes == null || world == null) return;
+
+            var indices = new List<int>();
+            for (var i = 0; i < world.Length; i++)
+            {
+                if ((world[i] - _pickPoint).sqrMagnitude <= _pickRadius * _pickRadius) indices.Add(i);
+            }
+
+            var stride = Mathf.Max(1, indices.Count / 800);
+            for (var k = 0; k < indices.Count; k += stride)
+            {
+                var position = world[indices[k]];
+                var distance = (position - _pickPoint).magnitude;
+                var alpha = (1f - distance / _pickRadius) * 0.85f + 0.15f;
+                _pickHighlight.Add(new PickHighlightPoint { Position = position, Alpha = alpha });
+            }
+        }
+
+        /// <summary>選んだ点の周りの頂点を、中心から離れるほど薄くなる点で描く。</summary>
+        private void DrawPickHighlight(Rect previewRect)
+        {
+            if (_pickShapes == null || _pickHighlight.Count == 0 || _cam == null) return;
+
+            var baseColor = yulEmoPreferences.HoverBoxColor;
+            foreach (var point in _pickHighlight)
+            {
+                var viewport = _cam.WorldToViewportPoint(point.Position);
+                if (viewport.z <= 0f) continue;
+
+                var gui = new Vector2(
+                    previewRect.x + viewport.x * previewRect.width,
+                    previewRect.y + (1f - viewport.y) * previewRect.height);
+                if (!previewRect.Contains(gui)) continue;
+
+                EditorGUI.DrawRect(
+                    new Rect(gui.x - 1.5f, gui.y - 1.5f, 3f, 3f),
+                    new Color(baseColor.r, baseColor.g, baseColor.b, point.Alpha));
             }
         }
     }
